@@ -1,0 +1,21 @@
+server:
+  # WebSocket + HTTP listen address.
+  address: "0.0.0.0:8443"
+  tls:
+    cert_file: "/etc/cc-anywhere/tls/cert.pem"
+    key_file: "/etc/cc-anywhere/tls/key.pem"
+  # Host (or host:port) used when composing absolute image upload/download URLs
+  # delivered to clients. Must be reachable from both Mac and phones.
+  public_host: "cc.example.com:8443"
+
+db:
+  path: "/var/lib/cc-anywhere/cc-anywhere.db"
+
+image:
+  inbox_dir: "/var/lib/cc-anywhere/inbox"
+  # Injected from environment so the secret never sits in the file.
+  hmac_secret: "${CC_HMAC_SECRET}"
+
+log:
+  # debug | info | warn | error
+  level: "info"

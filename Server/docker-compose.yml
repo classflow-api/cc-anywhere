@@ -1,0 +1,17 @@
+services:
+  cc-anywhere:
+    image: cc-anywhere:latest
+    build: .
+    container_name: cc-anywhere
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    volumes:
+      - ./config:/etc/cc-anywhere:ro
+      - cc-data:/var/lib/cc-anywhere
+    environment:
+      - TZ=Asia/Shanghai
+      - CC_HMAC_SECRET=${CC_HMAC_SECRET:?CC_HMAC_SECRET must be set in environment}
+
+volumes:
+  cc-data:

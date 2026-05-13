@@ -1,0 +1,20 @@
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  errors:
+    # 允许使用 print（仅在 logger fallback 时）
+    avoid_print: ignore
+    # 我们使用 Theme.of 的 onSurface 等系列，部分 widget 复用属于已知 pattern
+    use_super_parameters: ignore
+  exclude:
+    - "**/*.g.dart"
+    - "**/*.freezed.dart"
+
+linter:
+  rules:
+    avoid_print: false
+    prefer_const_constructors: true
+    prefer_const_literals_to_create_immutables: true
+    avoid_unnecessary_containers: true
+    sized_box_for_whitespace: true
+    use_key_in_widget_constructors: false

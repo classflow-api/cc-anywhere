@@ -15,8 +15,9 @@ desktop.ini
 .env.local
 .env.*.local
 
-# === MacClient (Swift / Xcode) ===
+# === MacClient (Swift / Xcode / SPM) ===
 MacClient/build/
+MacClient/.build/
 MacClient/DerivedData/
 MacClient/*.xcodeproj/xcuserdata/
 MacClient/*.xcodeproj/project.xcworkspace/xcuserdata/
