@@ -1,0 +1,56 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# === MacClient (Swift / Xcode) ===
+MacClient/build/
+MacClient/DerivedData/
+MacClient/*.xcodeproj/xcuserdata/
+MacClient/*.xcodeproj/project.xcworkspace/xcuserdata/
+MacClient/*.xcworkspace/xcuserdata/
+MacClient/Pods/
+MacClient/.swiftpm/
+MacClient/Package.resolved
+
+# === AndroidClient (Flutter / Android) ===
+AndroidClient/.dart_tool/
+AndroidClient/.flutter-plugins
+AndroidClient/.flutter-plugins-dependencies
+AndroidClient/.packages
+AndroidClient/.pub-cache/
+AndroidClient/.pub/
+AndroidClient/build/
+AndroidClient/android/.gradle/
+AndroidClient/android/local.properties
+AndroidClient/android/app/release/
+AndroidClient/android/key.properties
+AndroidClient/ios/Pods/
+AndroidClient/ios/.symlinks/
+AndroidClient/ios/Flutter/Flutter.framework
+AndroidClient/*.apk
+AndroidClient/*.aab
+AndroidClient/*.ipa
+AndroidClient/*.jks
+
+# === Server (Go) ===
+Server/bin/
+Server/dist/
+Server/*.exe
+Server/*.test
+Server/*.prof
+Server/coverage.out
+Server/vendor/
+Server/.env
