@@ -20,36 +20,48 @@ struct ChromeBar: View {
             connectionPill(palette: palette)
             Spacer()
             HStack(spacing: 14) {
-                Button(action: openHistory) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .foregroundColor(palette.textMuted)
-                }
-                .buttonStyle(.plain)
-                .help("查看日志")
-
-                Button(action: {}) {
-                    Image(systemName: "bell")
-                        .foregroundColor(palette.textMuted)
-                }
-                .buttonStyle(.plain)
-
-                Button(action: openPreferences) {
-                    Image(systemName: "gearshape")
-                        .foregroundColor(palette.textMuted)
-                }
-                .buttonStyle(.plain)
-                .help("偏好设置")
-                .keyboardShortcut(",", modifiers: .command)
+                chromeIconButton(systemName: "clock.arrow.circlepath",
+                                 tooltip: "查看日志",
+                                 palette: palette,
+                                 action: openHistory)
+                chromeIconButton(systemName: "bell",
+                                 tooltip: "通知",
+                                 palette: palette,
+                                 action: {})
+                chromeIconButton(systemName: "gearshape",
+                                 tooltip: "偏好设置",
+                                 palette: palette,
+                                 action: openPreferences)
+                    .keyboardShortcut(",", modifiers: .command)
             }
             .font(.system(size: 14))
             .padding(.trailing, 14)
         }
-        .frame(height: 36)
+        // Push the whole row below the macOS title bar so transparent-titlebar
+        // hit-test doesn't swallow our buttons (title bar grabs drag/click).
+        .padding(.top, 24)
+        .frame(height: 60)
         .background(palette.bgElev)
         .overlay(
             Rectangle().fill(palette.line).frame(height: 1),
             alignment: .bottom
         )
+    }
+
+    /// Icon button with an enlarged, opaque hit area so SwiftUI's .plain style
+    /// doesn't restrict clicks to image pixels.
+    private func chromeIconButton(systemName: String,
+                                  tooltip: String,
+                                  palette: ColorPalette,
+                                  action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .foregroundColor(palette.textMuted)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(tooltip)
     }
 
     private func connectionPill(palette: ColorPalette) -> some View {

@@ -1,0 +1,1028 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>cc-anywhere · 品牌标识</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a0d14;
+    --bg-elev: #11151e;
+    --bg-inset: #060810;
+    --line: rgba(255,255,255,0.08);
+    --line-strong: rgba(255,255,255,0.16);
+    --text: #eaeef7;
+    --text-mute: #97a0b2;
+    --text-faint: #5a6172;
+    --accent: oklch(0.78 0.13 200);
+    --accent-deep: oklch(0.58 0.16 215);
+    --violet: oklch(0.72 0.16 285);
+    --warm: oklch(0.78 0.14 60);
+    --emerald: oklch(0.74 0.17 165);
+    --paper: #f1ede2;
+    --paper-ink: #1c1812;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Inter', -apple-system, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    letter-spacing: -0.005em;
+  }
+  .mono { font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; }
+  /* Page shell */
+  .page {
+    max-width: 1280px; margin: 0 auto; padding: 64px 48px 96px;
+    position: relative;
+  }
+  /* Soft aurora */
+  .aurora {
+    position: fixed; inset: 0; pointer-events: none; overflow: hidden; z-index: 0;
+  }
+  .aurora div {
+    position: absolute; border-radius: 50%; filter: blur(120px); opacity: 0.45;
+  }
+  .aurora .a {
+    width: 540px; height: 540px; top: -160px; left: -120px;
+    background: oklch(0.55 0.16 220);
+    animation: orb 24s ease-in-out infinite;
+  }
+  .aurora .b {
+    width: 480px; height: 480px; bottom: -160px; right: -80px;
+    background: oklch(0.48 0.18 285);
+    animation: orb 28s ease-in-out infinite reverse;
+  }
+  @keyframes orb {
+    0%, 100% { transform: translate(0,0) scale(1); }
+    50%      { transform: translate(60px, -40px) scale(1.1); }
+  }
+  /* Dot grid texture */
+  .page::before {
+    content: ''; position: fixed; inset: 0; z-index: 1;
+    background-image: radial-gradient(rgba(255,255,255,0.04) 1px, transparent 1px);
+    background-size: 24px 24px;
+    mask-image: radial-gradient(ellipse at top, black 30%, transparent 80%);
+    pointer-events: none;
+  }
+  .content { position: relative; z-index: 2; }
+
+  /* Header */
+  .header { display: flex; align-items: center; gap: 16px; margin-bottom: 48px; }
+  .crumb {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 5px 12px; border-radius: 100px;
+    background: rgba(255,255,255,0.04); border: 1px solid var(--line);
+    font-size: 12px; color: var(--text-mute);
+  }
+  .crumb b { color: var(--text); font-weight: 700; }
+  .pulse-dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 10px var(--accent);
+    animation: pulse 1.8s ease-out infinite;
+  }
+  @keyframes pulse {
+    0%,100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  .h1 {
+    font-size: 88px; font-weight: 800; line-height: 0.95; letter-spacing: -0.04em;
+    margin: 0 0 18px; max-width: 900px;
+  }
+  .h1 em {
+    font-style: normal;
+    background: linear-gradient(135deg, var(--accent), var(--violet) 70%);
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .lede {
+    font-size: 17px; color: var(--text-mute); max-width: 640px; line-height: 1.55;
+    margin: 0;
+  }
+
+  /* Section */
+  .section { margin-top: 88px; }
+  .section-head {
+    display: flex; align-items: flex-end; gap: 24px;
+    margin-bottom: 28px;
+  }
+  .section-eyebrow {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.14em;
+    color: var(--text-faint); text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+  .section-title {
+    font-size: 32px; font-weight: 700; letter-spacing: -0.02em; margin: 0;
+  }
+  .section-sub {
+    font-size: 15px; color: var(--text-mute);
+    margin: 6px 0 0;
+  }
+
+  /* Concept card grid */
+  .concept-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+  }
+  .concept {
+    border-radius: 18px; overflow: hidden;
+    border: 1px solid var(--line);
+    background: linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01));
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    display: flex; flex-direction: column;
+  }
+  .concept-hero {
+    aspect-ratio: 16/10; display: grid; place-items: center;
+    position: relative; overflow: hidden;
+    border-bottom: 1px solid var(--line);
+  }
+  .concept-hero svg.mark { width: 42%; height: auto; }
+  .concept-body {
+    padding: 20px 22px 22px;
+  }
+  .concept-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em;
+    color: var(--text-faint); text-transform: uppercase;
+    margin-bottom: 8px; white-space: nowrap;
+  }
+  .concept-tag::before {
+    content: ''; width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor;
+  }
+  .concept-name {
+    font-size: 22px; font-weight: 700; letter-spacing: -0.01em;
+    margin: 0 0 6px;
+  }
+  .concept-desc {
+    font-size: 13.5px; color: var(--text-mute); line-height: 1.55; margin: 0 0 18px;
+  }
+  .variants {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  }
+  .variant {
+    width: 56px; height: 56px; border-radius: 12px;
+    display: grid; place-items: center; flex-shrink: 0;
+    border: 1px solid var(--line);
+    overflow: hidden;
+  }
+  .variant svg { width: 60%; height: auto; }
+  .variant.app-icon { border-radius: 14px; }
+  .variant-mac { border-radius: 14px; }
+  .variant-label {
+    font-size: 10.5px; color: var(--text-faint);
+    margin-top: 6px; text-align: center; font-family: 'JetBrains Mono';
+  }
+  .variant-stack { display: flex; flex-direction: column; align-items: center; }
+
+  /* Hero (selected concept) */
+  .hero-card {
+    margin-top: 24px;
+    border-radius: 24px; overflow: hidden;
+    border: 1px solid var(--line-strong);
+    background: radial-gradient(ellipse at 30% 0%,
+      color-mix(in oklab, var(--accent) 18%, transparent),
+      transparent 60%),
+      linear-gradient(180deg, var(--bg-elev), var(--bg));
+    box-shadow: 0 32px 80px -20px rgba(0,0,0,0.5),
+                0 0 0 1px rgba(255,255,255,0.04) inset;
+    position: relative;
+  }
+  .hero-card-inner {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    min-height: 480px;
+  }
+  .hero-mark-side {
+    position: relative; display: grid; place-items: center;
+    overflow: hidden;
+    background:
+      radial-gradient(circle at 50% 50%,
+        color-mix(in oklab, var(--accent) 20%, transparent), transparent 60%);
+    border-right: 1px solid var(--line);
+  }
+  .hero-mark-side::before {
+    content: ''; position: absolute; inset: 0;
+    background-image:
+      linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px),
+      linear-gradient(0deg,  rgba(255,255,255,0.05) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: radial-gradient(ellipse, black 20%, transparent 70%);
+    -webkit-mask-image: radial-gradient(ellipse, black 20%, transparent 70%);
+  }
+  .hero-mark-side svg.mark { width: 60%; height: auto; position: relative; z-index: 1;
+    filter: drop-shadow(0 24px 40px color-mix(in oklab, var(--accent) 50%, transparent)); }
+
+  .hero-info {
+    padding: 44px 44px 44px;
+    display: flex; flex-direction: column; justify-content: center; gap: 18px;
+  }
+  .hero-eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.16em;
+    color: var(--accent); text-transform: uppercase;
+  }
+  .hero-name {
+    font-size: 44px; font-weight: 800; letter-spacing: -0.025em; margin: 0;
+  }
+  .hero-tag {
+    font-size: 16px; color: var(--text-mute); line-height: 1.55;
+    margin: 0; max-width: 460px;
+  }
+  .rationale {
+    margin-top: 8px;
+    border-left: 2px solid var(--accent);
+    padding: 4px 0 4px 16px;
+    font-size: 13.5px; color: var(--text);
+    line-height: 1.6;
+  }
+  .rationale b { color: var(--accent); }
+
+  /* Wordmark row */
+  .wordmark-row {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+  }
+  .wm-card {
+    border-radius: 16px; padding: 36px 32px;
+    border: 1px solid var(--line);
+    display: flex; align-items: center; gap: 18px;
+    min-height: 116px;
+  }
+  .wm-card.light { background: var(--paper); color: var(--paper-ink); }
+  .wm-card.dark  { background: var(--bg-inset); }
+  .wm-card svg.mark { width: 48px; height: 48px; flex-shrink: 0; }
+  .wm-type {
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .wm-type .word {
+    font-size: 32px; font-weight: 800; letter-spacing: -0.03em; line-height: 1;
+  }
+  .wm-type .word .dash {
+    color: color-mix(in oklab, currentColor 40%, transparent);
+  }
+  .wm-type .word .accent { color: var(--accent); }
+  .wm-card.light .wm-type .word .accent { color: var(--accent-deep); }
+  .wm-type .tag {
+    font-size: 11px; letter-spacing: 0.24em; text-transform: uppercase;
+    font-weight: 600;
+    color: color-mix(in oklab, currentColor 50%, transparent);
+    font-family: 'JetBrains Mono';
+  }
+
+  /* App icon row */
+  .icon-row {
+    display: grid; grid-template-columns: repeat(5, 1fr); gap: 18px;
+  }
+  .icon-card {
+    border-radius: 14px; padding: 20px;
+    border: 1px solid var(--line);
+    background: rgba(255,255,255,0.02);
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+  }
+  .icon-card .icon-tile {
+    width: 100%; aspect-ratio: 1; max-width: 132px;
+    overflow: hidden; position: relative;
+  }
+  .icon-tile.macos { border-radius: 26%; box-shadow: 0 18px 36px -16px rgba(0,0,0,0.65); }
+  .icon-tile.android { border-radius: 50%; box-shadow: 0 18px 36px -16px rgba(0,0,0,0.65); }
+  .icon-tile.favicon { border-radius: 6px; max-width: 64px; }
+  .icon-tile svg { width: 100%; height: 100%; display: block; }
+  .icon-card .label {
+    font-size: 11px; font-family: 'JetBrains Mono';
+    color: var(--text-faint); letter-spacing: 0.06em;
+  }
+  .icon-card .ctx { font-size: 13px; color: var(--text-mute); font-weight: 500; }
+
+  /* Construction sheet */
+  .construction {
+    border-radius: 18px;
+    border: 1px solid var(--line);
+    background: rgba(255,255,255,0.02);
+    padding: 32px;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 32px;
+  }
+  .construction-vis {
+    border-radius: 12px;
+    background: var(--bg-inset);
+    aspect-ratio: 1; display: grid; place-items: center;
+    border: 1px solid var(--line);
+    position: relative; overflow: hidden;
+  }
+  .construction-vis svg { width: 70%; height: auto; }
+  .construction-info dl {
+    display: grid; grid-template-columns: 120px 1fr;
+    gap: 14px 18px; margin: 0;
+    font-size: 13px;
+  }
+  .construction-info dt {
+    font-family: 'JetBrains Mono'; font-size: 11px; letter-spacing: 0.1em;
+    color: var(--text-faint); text-transform: uppercase; margin: 0; padding-top: 2px;
+  }
+  .construction-info dd { margin: 0; color: var(--text); }
+
+  /* Palette */
+  .palette {
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px;
+  }
+  .swatch {
+    border-radius: 14px; aspect-ratio: 4/5; padding: 16px;
+    display: flex; flex-direction: column; justify-content: space-between;
+    border: 1px solid rgba(255,255,255,0.05);
+    position: relative;
+  }
+  .swatch .name { font-size: 13px; font-weight: 700; }
+  .swatch .val  { font-family: 'JetBrains Mono'; font-size: 10.5px; opacity: 0.7; margin-top: 4px; }
+  .swatch .role { font-family: 'JetBrains Mono'; font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; opacity: 0.55; }
+
+  /* Footer */
+  .footer {
+    margin-top: 96px; padding-top: 32px;
+    border-top: 1px solid var(--line);
+    font-size: 12px; color: var(--text-faint);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+
+  @media (max-width: 900px) {
+    .concept-grid, .wordmark-row, .construction { grid-template-columns: 1fr; }
+    .hero-card-inner { grid-template-columns: 1fr; }
+    .icon-row { grid-template-columns: repeat(2, 1fr); }
+    .h1 { font-size: 56px; }
+  }
+</style>
+</head>
+<body>
+<div class="aurora"><div class="a"></div><div class="b"></div></div>
+<div class="page">
+<div class="content">
+
+  <!-- ── HEADER ───────────────────────────────────────────── -->
+  <div class="header">
+    <div class="crumb">
+      <span class="pulse-dot"></span>
+      <span>cc-anywhere</span>
+      <span style="color: var(--text-faint);">·</span>
+      <b>Brand</b>
+      <span style="color: var(--text-faint);">·</span>
+      <span class="mono">v0.1</span>
+    </div>
+  </div>
+
+  <h1 class="h1">让命令行<br/><em>有了形象</em></h1>
+  <p class="lede">
+    cc-anywhere 的标识系统围绕一个核心矛盾构建 —— 终端是封闭的、本地的、严肃的;
+    而 cc-anywhere 让它变得开放、流动、随处可达。下面是 4 个候选方向, 与一个深入展开的推荐方案。
+  </p>
+
+  <!-- ── HERO (recommended) ───────────────────────────────── -->
+  <section class="section">
+    <div class="section-head">
+      <div>
+        <div class="section-eyebrow">推荐方案</div>
+        <h2 class="section-title">Prompt · Beacon</h2>
+        <p class="section-sub">提示符 + 信号点 · 一个会发声的终端</p>
+      </div>
+    </div>
+
+    <div class="hero-card">
+      <div class="hero-card-inner">
+        <div class="hero-mark-side">
+          <!-- Primary mark: prompt arrow + emitting dot with arcs -->
+          <svg class="mark" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="mg-cyan" x1="20" y1="40" x2="180" y2="160" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="oklch(0.86 0.14 200)"/>
+                <stop offset="60%" stop-color="oklch(0.74 0.14 220)"/>
+                <stop offset="100%" stop-color="oklch(0.6 0.18 280)"/>
+              </linearGradient>
+              <linearGradient id="mg-dot" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="oklch(0.92 0.12 200)"/>
+                <stop offset="100%" stop-color="oklch(0.7 0.18 270)"/>
+              </linearGradient>
+            </defs>
+            <!-- chevron prompt -->
+            <path d="M48 56 L104 100 L48 144"
+              stroke="url(#mg-cyan)" stroke-width="22"
+              stroke-linecap="round" stroke-linejoin="round"/>
+            <!-- emitting dot -->
+            <circle cx="148" cy="100" r="14" fill="url(#mg-dot)"/>
+            <!-- broadcast arcs -->
+            <path d="M168 84 Q182 100 168 116" stroke="url(#mg-dot)" stroke-width="6"
+              stroke-linecap="round" opacity="0.8"/>
+            <path d="M180 72 Q200 100 180 128" stroke="url(#mg-dot)" stroke-width="6"
+              stroke-linecap="round" opacity="0.45"/>
+          </svg>
+        </div>
+
+        <div class="hero-info">
+          <div class="hero-eyebrow">
+            <span class="pulse-dot" style="background: var(--accent);"></span>
+            主推 · Primary mark
+          </div>
+          <h3 class="hero-name">Prompt · Beacon</h3>
+          <p class="hero-tag">
+            一个 <span class="mono" style="color:var(--text);">❯</span> 提示符正在向远端"发声"。
+            chevron 是 Claude Code 的灵魂, 右侧的圆点与同心弧暗示 cross-device 的信号传递。
+          </p>
+          <div class="rationale">
+            <b>为什么是它</b> · 同时编码了两件最重要的事:
+            <span class="mono" style="background: rgba(255,255,255,0.05); padding: 1px 6px; border-radius: 4px;">terminal</span>
+            (chevron) 与
+            <span class="mono" style="background: rgba(255,255,255,0.05); padding: 1px 6px; border-radius: 4px;">anywhere</span>
+            (broadcast)。1 像素也能识别, 适合 favicon / 通知小图标 / 一句话 boilerplate。
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- App icon row -->
+    <div class="icon-row" style="margin-top: 24px;">
+      <!-- macOS app icon -->
+      <div class="icon-card">
+        <div class="icon-tile macos" style="background:
+          radial-gradient(circle at 30% 25%, oklch(0.45 0.12 220), oklch(0.16 0.05 240) 70%);">
+          <svg viewBox="0 0 200 200">
+            <defs>
+              <linearGradient id="aic-grad" x1="20" y1="40" x2="180" y2="160">
+                <stop offset="0%" stop-color="oklch(0.92 0.12 200)"/>
+                <stop offset="100%" stop-color="oklch(0.66 0.18 270)"/>
+              </linearGradient>
+            </defs>
+            <path d="M62 70 L106 100 L62 130" stroke="url(#aic-grad)" stroke-width="20"
+              stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <circle cx="142" cy="100" r="12" fill="url(#aic-grad)"/>
+            <path d="M158 88 Q170 100 158 112" stroke="url(#aic-grad)" stroke-width="5"
+              stroke-linecap="round" opacity="0.6" fill="none"/>
+          </svg>
+        </div>
+        <div class="ctx">macOS · Dock</div>
+        <div class="label">1024×1024</div>
+      </div>
+
+      <!-- Android adaptive icon (circle mask) -->
+      <div class="icon-card">
+        <div class="icon-tile android" style="background:
+          radial-gradient(circle at 30% 25%, oklch(0.55 0.15 250), oklch(0.18 0.05 240) 70%);">
+          <svg viewBox="0 0 200 200">
+            <path d="M62 70 L106 100 L62 130" stroke="#fff" stroke-width="20"
+              stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.95"/>
+            <circle cx="142" cy="100" r="12" fill="#fff"/>
+            <path d="M158 88 Q170 100 158 112" stroke="#fff" stroke-width="5"
+              stroke-linecap="round" opacity="0.55" fill="none"/>
+          </svg>
+        </div>
+        <div class="ctx">Android · Adaptive</div>
+        <div class="label">432×432 fg</div>
+      </div>
+
+      <!-- Notification monochrome -->
+      <div class="icon-card">
+        <div class="icon-tile macos" style="background: var(--paper); display:grid; place-items:center;">
+          <svg viewBox="0 0 200 200" style="width:55%;">
+            <path d="M62 70 L106 100 L62 130" stroke="#1c1812" stroke-width="22"
+              stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <circle cx="142" cy="100" r="13" fill="#1c1812"/>
+          </svg>
+        </div>
+        <div class="ctx">Mono · paper</div>
+        <div class="label">1-bit safe</div>
+      </div>
+
+      <!-- Status bar (small) -->
+      <div class="icon-card">
+        <div class="icon-tile macos" style="background: #0a0d14; display:grid; place-items:center;">
+          <svg viewBox="0 0 200 200" style="width:55%;">
+            <path d="M62 70 L106 100 L62 130" stroke="#eaeef7" stroke-width="22"
+              stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <circle cx="142" cy="100" r="13" fill="#eaeef7"/>
+          </svg>
+        </div>
+        <div class="ctx">Mono · ink</div>
+        <div class="label">status bar</div>
+      </div>
+
+      <!-- Favicon -->
+      <div class="icon-card">
+        <div class="icon-tile macos favicon" style="background:
+          linear-gradient(135deg, oklch(0.55 0.16 220), oklch(0.4 0.18 280));">
+          <svg viewBox="0 0 200 200">
+            <path d="M70 76 L106 100 L70 124" stroke="#fff" stroke-width="22"
+              stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <circle cx="138" cy="100" r="11" fill="#fff"/>
+          </svg>
+        </div>
+        <div class="ctx">Favicon</div>
+        <div class="label">16 · 32 · 64</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── WORDMARK LOCKUPS ─────────────────────────────────── -->
+  <section class="section">
+    <div class="section-head">
+      <div>
+        <div class="section-eyebrow">字标组合</div>
+        <h2 class="section-title">Lockup</h2>
+        <p class="section-sub">JetBrains Mono "cc-" + Inter Black "anywhere" · 强调"代码"与"日常"的并置</p>
+      </div>
+    </div>
+
+    <div class="wordmark-row">
+      <div class="wm-card dark">
+        <svg class="mark" viewBox="0 0 200 200" fill="none">
+          <defs>
+            <linearGradient id="wm-d" x1="20" y1="40" x2="180" y2="160">
+              <stop offset="0%" stop-color="oklch(0.86 0.14 200)"/>
+              <stop offset="100%" stop-color="oklch(0.6 0.18 280)"/>
+            </linearGradient>
+          </defs>
+          <path d="M48 56 L104 100 L48 144" stroke="url(#wm-d)" stroke-width="22"
+            stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="148" cy="100" r="14" fill="url(#wm-d)"/>
+        </svg>
+        <div class="wm-type">
+          <div class="word">
+            <span class="mono" style="font-weight:800;">cc</span><span class="dash mono" style="font-weight:800;">-</span><span style="font-weight:800;">anywhere</span>
+          </div>
+          <div class="tag">cross-device claude code</div>
+        </div>
+      </div>
+      <div class="wm-card light">
+        <svg class="mark" viewBox="0 0 200 200" fill="none">
+          <path d="M48 56 L104 100 L48 144" stroke="#1c1812" stroke-width="22"
+            stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="148" cy="100" r="14" fill="#1c1812"/>
+        </svg>
+        <div class="wm-type">
+          <div class="word">
+            <span class="mono" style="font-weight:800;">cc</span><span class="dash mono" style="font-weight:800;">-</span><span style="font-weight:800;">anywhere</span>
+          </div>
+          <div class="tag">cross-device claude code</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── OTHER CONCEPTS ───────────────────────────────────── -->
+  <section class="section">
+    <div class="section-head">
+      <div>
+        <div class="section-eyebrow">候选方向</div>
+        <h2 class="section-title">3 个备选概念</h2>
+        <p class="section-sub">不同的隐喻 / 不同的气质 · 选一个最贴合产品价值观的</p>
+      </div>
+    </div>
+
+    <div class="concept-grid">
+
+      <!-- Concept: Linked CC -->
+      <div class="concept">
+        <div class="concept-hero" style="background:
+          radial-gradient(circle at 30% 30%, oklch(0.45 0.16 165), oklch(0.12 0.04 165) 70%);">
+          <svg class="mark" viewBox="0 0 220 200" fill="none">
+            <defs>
+              <linearGradient id="cc-a" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="oklch(0.86 0.14 165)"/>
+                <stop offset="100%" stop-color="oklch(0.62 0.14 200)"/>
+              </linearGradient>
+            </defs>
+            <!-- Left C: filled arc opening right -->
+            <path d="M88 60 a40 40 0 1 0 0 80"
+              stroke="url(#cc-a)" stroke-width="20" stroke-linecap="round" fill="none"/>
+            <!-- Right C: ghost arc opening left -->
+            <path d="M132 60 a40 40 0 1 1 0 80"
+              stroke="url(#cc-a)" stroke-width="20" stroke-linecap="round" fill="none" opacity="0.4"/>
+            <!-- Cursor block in middle -->
+            <rect x="103" y="92" width="14" height="16" rx="2" fill="url(#cc-a)"/>
+          </svg>
+        </div>
+        <div class="concept-body">
+          <div class="concept-tag" style="color: oklch(0.78 0.14 165);">Concept · A</div>
+          <h3 class="concept-name">Sync Loop</h3>
+          <p class="concept-desc">
+            两个 c 互为镜像, 中间一个跳动的光标块 —— Mac 与手机之间的实时同步.
+            最直接地表达 "cc" 与 "双端协作".
+          </p>
+          <div class="variants">
+            <div class="variant-stack">
+              <div class="variant" style="background: var(--bg-inset);">
+                <svg viewBox="0 0 220 200" fill="none">
+                  <path d="M88 60 a40 40 0 1 0 0 80" stroke="#eaeef7" stroke-width="22" stroke-linecap="round" fill="none"/>
+                  <path d="M132 60 a40 40 0 1 1 0 80" stroke="#eaeef7" stroke-width="22" stroke-linecap="round" fill="none" opacity="0.45"/>
+                  <rect x="103" y="92" width="14" height="16" rx="2" fill="#eaeef7"/>
+                </svg>
+              </div>
+              <div class="variant-label">mono</div>
+            </div>
+            <div class="variant-stack">
+              <div class="variant app-icon" style="background:
+                radial-gradient(circle at 30% 25%, oklch(0.5 0.15 165), oklch(0.16 0.05 165) 70%);">
+                <svg viewBox="0 0 220 200" fill="none">
+                  <path d="M88 60 a40 40 0 1 0 0 80" stroke="#fff" stroke-width="22" stroke-linecap="round" fill="none"/>
+                  <path d="M132 60 a40 40 0 1 1 0 80" stroke="#fff" stroke-width="22" stroke-linecap="round" fill="none" opacity="0.45"/>
+                  <rect x="103" y="92" width="14" height="16" rx="2" fill="#fff"/>
+                </svg>
+              </div>
+              <div class="variant-label">macOS</div>
+            </div>
+            <div class="variant-stack">
+              <div class="variant" style="background: var(--paper); border-radius: 50%;">
+                <svg viewBox="0 0 220 200" fill="none">
+                  <path d="M88 60 a40 40 0 1 0 0 80" stroke="#1c1812" stroke-width="22" stroke-linecap="round" fill="none"/>
+                  <path d="M132 60 a40 40 0 1 1 0 80" stroke="#1c1812" stroke-width="22" stroke-linecap="round" fill="none" opacity="0.45"/>
+                  <rect x="103" y="92" width="14" height="16" rx="2" fill="#1c1812"/>
+                </svg>
+              </div>
+              <div class="variant-label">droid</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Concept: Terminal Frame -->
+      <div class="concept">
+        <div class="concept-hero" style="background:
+          radial-gradient(circle at 30% 30%, oklch(0.42 0.16 55), oklch(0.13 0.05 50) 70%);">
+          <svg class="mark" viewBox="0 0 220 200" fill="none">
+            <defs>
+              <linearGradient id="tf-a" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="oklch(0.86 0.13 60)"/>
+                <stop offset="100%" stop-color="oklch(0.65 0.16 30)"/>
+              </linearGradient>
+            </defs>
+            <!-- Left bracket -->
+            <path d="M76 56 L56 56 L56 144 L76 144" stroke="url(#tf-a)" stroke-width="14"
+              stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <!-- Right bracket -->
+            <path d="M144 56 L164 56 L164 144 L144 144" stroke="url(#tf-a)" stroke-width="14"
+              stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <!-- Cursor block in middle -->
+            <rect x="92" y="86" width="36" height="28" rx="5" fill="url(#tf-a)"/>
+          </svg>
+        </div>
+        <div class="concept-body">
+          <div class="concept-tag" style="color: oklch(0.84 0.14 60);">Concept · B</div>
+          <h3 class="concept-name">Bracket Terminal</h3>
+          <p class="concept-desc">
+            一对方括号包住一个光标块 —— 把整个终端封装成一枚徽章.
+            最 "工程师", 最贴近 shell prompt 的视觉.
+          </p>
+          <div class="variants">
+            <div class="variant-stack">
+              <div class="variant" style="background: var(--bg-inset);">
+                <svg viewBox="0 0 220 200" fill="none">
+                  <path d="M76 56 L56 56 L56 144 L76 144" stroke="#eaeef7" stroke-width="14"
+                    stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                  <path d="M144 56 L164 56 L164 144 L144 144" stroke="#eaeef7" stroke-width="14"
+                    stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                  <rect x="92" y="86" width="36" height="28" rx="5" fill="#eaeef7"/>
+                </svg>
+              </div>
+              <div class="variant-label">mono</div>
+            </div>
+            <div class="variant-stack">
+              <div class="variant app-icon" style="background:
+                radial-gradient(circle at 30% 25%, oklch(0.48 0.16 55), oklch(0.16 0.05 50) 70%);">
+                <svg viewBox="0 0 220 200" fill="none">
+                  <path d="M76 56 L56 56 L56 144 L76 144" stroke="#fff" stroke-width="14"
+                    stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                  <path d="M144 56 L164 56 L164 144 L144 144" stroke="#fff" stroke-width="14"
+                    stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                  <rect x="92" y="86" width="36" height="28" rx="5" fill="#fff"/>
+                </svg>
+              </div>
+              <div class="variant-label">macOS</div>
+            </div>
+            <div class="variant-stack">
+              <div class="variant" style="background: var(--paper); border-radius: 50%;">
+                <svg viewBox="0 0 220 200" fill="none">
+                  <path d="M76 56 L56 56 L56 144 L76 144" stroke="#1c1812" stroke-width="14"
+                    stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                  <path d="M144 56 L164 56 L164 144 L144 144" stroke="#1c1812" stroke-width="14"
+                    stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                  <rect x="92" y="86" width="36" height="28" rx="5" fill="#1c1812"/>
+                </svg>
+              </div>
+              <div class="variant-label">droid</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Concept: Stacked Chevron -->
+      <div class="concept">
+        <div class="concept-hero" style="background:
+          radial-gradient(circle at 30% 30%, oklch(0.4 0.18 285), oklch(0.13 0.06 285) 70%);">
+          <svg class="mark" viewBox="0 0 220 200" fill="none">
+            <defs>
+              <linearGradient id="sc-a" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="oklch(0.85 0.14 285)"/>
+                <stop offset="100%" stop-color="oklch(0.62 0.18 320)"/>
+              </linearGradient>
+            </defs>
+            <!-- Outer chevron (Mac) -->
+            <path d="M60 56 L122 100 L60 144" stroke="url(#sc-a)" stroke-width="20"
+              stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <!-- Inner chevron (phone) -->
+            <path d="M110 78 L150 100 L110 122" stroke="url(#sc-a)" stroke-width="20"
+              stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.55"/>
+          </svg>
+        </div>
+        <div class="concept-body">
+          <div class="concept-tag" style="color: oklch(0.82 0.16 285);">Concept · C</div>
+          <h3 class="concept-name">Relay Chevrons</h3>
+          <p class="concept-desc">
+            两个 chevron 套娃 · 大的是 Mac, 小的是手机, 信号从大端转发到小端 —
+            最直白地表达"接力"和"远程接管".
+          </p>
+          <div class="variants">
+            <div class="variant-stack">
+              <div class="variant" style="background: var(--bg-inset);">
+                <svg viewBox="0 0 220 200" fill="none">
+                  <path d="M60 56 L122 100 L60 144" stroke="#eaeef7" stroke-width="20"
+                    stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                  <path d="M110 78 L150 100 L110 122" stroke="#eaeef7" stroke-width="20"
+                    stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.55"/>
+                </svg>
+              </div>
+              <div class="variant-label">mono</div>
+            </div>
+            <div class="variant-stack">
+              <div class="variant app-icon" style="background:
+                radial-gradient(circle at 30% 25%, oklch(0.45 0.18 285), oklch(0.16 0.05 285) 70%);">
+                <svg viewBox="0 0 220 200" fill="none">
+                  <path d="M60 56 L122 100 L60 144" stroke="#fff" stroke-width="20"
+                    stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                  <path d="M110 78 L150 100 L110 122" stroke="#fff" stroke-width="20"
+                    stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.55"/>
+                </svg>
+              </div>
+              <div class="variant-label">macOS</div>
+            </div>
+            <div class="variant-stack">
+              <div class="variant" style="background: var(--paper); border-radius: 50%;">
+                <svg viewBox="0 0 220 200" fill="none">
+                  <path d="M60 56 L122 100 L60 144" stroke="#1c1812" stroke-width="20"
+                    stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                  <path d="M110 78 L150 100 L110 122" stroke="#1c1812" stroke-width="20"
+                    stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.55"/>
+                </svg>
+              </div>
+              <div class="variant-label">droid</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Concept: Aperture / orbit -->
+      <div class="concept">
+        <div class="concept-hero" style="background:
+          radial-gradient(circle at 30% 30%, oklch(0.4 0.13 230), oklch(0.12 0.04 230) 70%);">
+          <svg class="mark" viewBox="0 0 220 200" fill="none">
+            <defs>
+              <linearGradient id="ap-a" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="oklch(0.85 0.12 220)"/>
+                <stop offset="100%" stop-color="oklch(0.6 0.16 230)"/>
+              </linearGradient>
+            </defs>
+            <!-- Outer orbit ring -->
+            <ellipse cx="110" cy="100" rx="68" ry="22" stroke="url(#ap-a)" stroke-width="6"
+              stroke-linecap="round" fill="none" opacity="0.4" transform="rotate(-20 110 100)"/>
+            <!-- Center cursor block -->
+            <rect x="90" y="76" width="40" height="48" rx="8" fill="url(#ap-a)"/>
+            <!-- Caret in cursor -->
+            <path d="M101 92 L113 100 L101 108" stroke="#0a0d14" stroke-width="6"
+              stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <!-- Orbiting dot -->
+            <circle cx="170" cy="92" r="7" fill="url(#ap-a)"/>
+          </svg>
+        </div>
+        <div class="concept-body">
+          <div class="concept-tag" style="color: oklch(0.82 0.13 230);">Concept · D</div>
+          <h3 class="concept-name">Orbit Cursor</h3>
+          <p class="concept-desc">
+            一个光标坐镇中央, 设备像卫星一样围绕它运行 · 把 Claude Code 推到舞台中心,
+            手机是"轨道"上的一个端点.
+          </p>
+          <div class="variants">
+            <div class="variant-stack">
+              <div class="variant" style="background: var(--bg-inset);">
+                <svg viewBox="0 0 220 200" fill="none">
+                  <ellipse cx="110" cy="100" rx="68" ry="22" stroke="#eaeef7" stroke-width="6"
+                    stroke-linecap="round" fill="none" opacity="0.45" transform="rotate(-20 110 100)"/>
+                  <rect x="90" y="76" width="40" height="48" rx="8" fill="#eaeef7"/>
+                  <path d="M101 92 L113 100 L101 108" stroke="#0a0d14" stroke-width="6"
+                    stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                  <circle cx="170" cy="92" r="7" fill="#eaeef7"/>
+                </svg>
+              </div>
+              <div class="variant-label">mono</div>
+            </div>
+            <div class="variant-stack">
+              <div class="variant app-icon" style="background:
+                radial-gradient(circle at 30% 25%, oklch(0.45 0.13 220), oklch(0.16 0.05 220) 70%);">
+                <svg viewBox="0 0 220 200" fill="none">
+                  <ellipse cx="110" cy="100" rx="68" ry="22" stroke="#fff" stroke-width="6"
+                    stroke-linecap="round" fill="none" opacity="0.45" transform="rotate(-20 110 100)"/>
+                  <rect x="90" y="76" width="40" height="48" rx="8" fill="#fff"/>
+                  <path d="M101 92 L113 100 L101 108" stroke="#0a0d14" stroke-width="6"
+                    stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                  <circle cx="170" cy="92" r="7" fill="#fff"/>
+                </svg>
+              </div>
+              <div class="variant-label">macOS</div>
+            </div>
+            <div class="variant-stack">
+              <div class="variant" style="background: var(--paper); border-radius: 50%;">
+                <svg viewBox="0 0 220 200" fill="none">
+                  <ellipse cx="110" cy="100" rx="68" ry="22" stroke="#1c1812" stroke-width="6"
+                    stroke-linecap="round" fill="none" opacity="0.45" transform="rotate(-20 110 100)"/>
+                  <rect x="90" y="76" width="40" height="48" rx="8" fill="#1c1812"/>
+                  <path d="M101 92 L113 100 L101 108" stroke="#f1ede2" stroke-width="6"
+                    stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+                  <circle cx="170" cy="92" r="7" fill="#1c1812"/>
+                </svg>
+              </div>
+              <div class="variant-label">droid</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ── CONSTRUCTION (primary mark) ──────────────────────── -->
+  <section class="section">
+    <div class="section-head">
+      <div>
+        <div class="section-eyebrow">构成 · Prompt · Beacon</div>
+        <h2 class="section-title">几何规范</h2>
+        <p class="section-sub">基于 200 × 200 单位网格 · 所有曲率与圆角均派生自基准笔粗 22u</p>
+      </div>
+    </div>
+
+    <div class="construction">
+      <div class="construction-vis">
+        <svg viewBox="0 0 200 200" fill="none">
+          <!-- Grid lines -->
+          <g stroke="rgba(255,255,255,0.08)" stroke-width="0.5">
+            <line x1="0" y1="50" x2="200" y2="50"/>
+            <line x1="0" y1="100" x2="200" y2="100"/>
+            <line x1="0" y1="150" x2="200" y2="150"/>
+            <line x1="50" y1="0" x2="50" y2="200"/>
+            <line x1="100" y1="0" x2="100" y2="200"/>
+            <line x1="150" y1="0" x2="150" y2="200"/>
+          </g>
+          <!-- Safe area circle -->
+          <circle cx="100" cy="100" r="78" stroke="rgba(255,255,255,0.15)" stroke-dasharray="2 4" fill="none"/>
+          <!-- Bounding rectangle of chevron -->
+          <rect x="48" y="56" width="56" height="88" stroke="oklch(0.78 0.13 200 / 0.35)" stroke-width="1" stroke-dasharray="3 3" fill="none"/>
+          <!-- The mark -->
+          <path d="M48 56 L104 100 L48 144" stroke="oklch(0.78 0.13 200)" stroke-width="22"
+            stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+          <circle cx="148" cy="100" r="14" fill="oklch(0.78 0.13 200)"/>
+          <!-- annotations -->
+          <circle cx="148" cy="100" r="22" stroke="oklch(0.78 0.13 200 / 0.35)" stroke-width="1" stroke-dasharray="3 3" fill="none"/>
+          <line x1="104" y1="100" x2="134" y2="100" stroke="oklch(0.78 0.13 200 / 0.55)" stroke-width="1"/>
+        </svg>
+      </div>
+      <div class="construction-info">
+        <dl>
+          <dt>Grid</dt><dd>200 × 200 单位, 基线 50 / 100 / 150</dd>
+          <dt>Stroke</dt><dd>22u · 即 11% 网格宽度</dd>
+          <dt>Corners</dt><dd>所有 chevron 端点统一 round cap</dd>
+          <dt>Dot</dt><dd>半径 14u · 距 chevron 顶点 44u</dd>
+          <dt>Gap rule</dt><dd>大于光标半径 (≥14u), 避免 vista 误判为合体</dd>
+          <dt>Safe area</dt><dd>r=78u 圆心区, 不放任何元素以适配 Android 自适应图标</dd>
+          <dt>Min size</dt><dd>16px 仍可识别 (favicon 测试通过)</dd>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── PALETTE ──────────────────────────────────────────── -->
+  <section class="section">
+    <div class="section-head">
+      <div>
+        <div class="section-eyebrow">色板</div>
+        <h2 class="section-title">Brand Palette</h2>
+        <p class="section-sub">与产品 UI 共享同一组 oklch · 一套到底</p>
+      </div>
+    </div>
+    <div class="palette">
+      <div class="swatch" style="background: oklch(0.78 0.13 200); color:#001924;">
+        <div class="role">primary</div>
+        <div><div class="name">Beacon Cyan</div><div class="val">oklch(0.78 0.13 200)</div></div>
+      </div>
+      <div class="swatch" style="background: oklch(0.6 0.18 280); color:#fff;">
+        <div class="role">accent</div>
+        <div><div class="name">Signal Violet</div><div class="val">oklch(0.60 0.18 280)</div></div>
+      </div>
+      <div class="swatch" style="background: oklch(0.74 0.17 165); color:#001e15;">
+        <div class="role">success</div>
+        <div><div class="name">Active Mint</div><div class="val">oklch(0.74 0.17 165)</div></div>
+      </div>
+      <div class="swatch" style="background: oklch(0.78 0.16 75); color:#221400;">
+        <div class="role">pending</div>
+        <div><div class="name">Tool Amber</div><div class="val">oklch(0.78 0.16 75)</div></div>
+      </div>
+      <div class="swatch" style="background: #0a0d14; color:#eaeef7; border:1px solid var(--line);">
+        <div class="role">surface</div>
+        <div><div class="name">Ink</div><div class="val">#0A0D14</div></div>
+      </div>
+      <div class="swatch" style="background: #f1ede2; color:#1c1812;">
+        <div class="role">paper</div>
+        <div><div class="name">Parchment</div><div class="val">#F1EDE2</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── USAGE ────────────────────────────────────────────── -->
+  <section class="section">
+    <div class="section-head">
+      <div>
+        <div class="section-eyebrow">应用示例</div>
+        <h2 class="section-title">In context</h2>
+        <p class="section-sub">实际场景中的呼吸感</p>
+      </div>
+    </div>
+
+    <div style="display:grid; grid-template-columns: 1.4fr 1fr; gap: 24px;">
+      <!-- Terminal screenshot mockup -->
+      <div style="border-radius: 18px; overflow:hidden; border: 1px solid var(--line); background: #0d1117; font-family:'JetBrains Mono'; padding: 24px 28px; min-height: 280px;">
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom: 18px;">
+          <div style="width:11px;height:11px;border-radius:50%;background:#ff5f57;"></div>
+          <div style="width:11px;height:11px;border-radius:50%;background:#febc2e;"></div>
+          <div style="width:11px;height:11px;border-radius:50%;background:#28c840;"></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px; margin-bottom: 24px;">
+          <svg viewBox="0 0 200 200" width="36" height="36">
+            <defs>
+              <linearGradient id="termlogo" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0%" stop-color="oklch(0.86 0.14 200)"/>
+                <stop offset="100%" stop-color="oklch(0.6 0.18 280)"/>
+              </linearGradient>
+            </defs>
+            <path d="M48 56 L104 100 L48 144" stroke="url(#termlogo)" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <circle cx="148" cy="100" r="14" fill="url(#termlogo)"/>
+          </svg>
+          <div>
+            <div style="font-size:14px;color:#d1d9e6;font-weight:600;">cc-anywhere</div>
+            <div style="font-size:11.5px;color:#6e7681;">v0.4.2 · agent_id agt_4f2c·8a91</div>
+          </div>
+        </div>
+        <div style="color:#6e7681;font-size:12.5px;line-height:1.7;">
+          $ <span style="color:#79c0ff;">cc-anywhere</span> start --tab refactor-engine<br/>
+          → bound device <span style="color:#7ee787;">Pixel 8 Pro</span> · sub_token …7a3f<br/>
+          → listening jsonl · <span style="color:#d2a8ff;">38ms</span> roundtrip<br/>
+          → <span style="color:#ffa657;">▶</span> ready
+        </div>
+      </div>
+
+      <!-- Avatar / chip variants -->
+      <div style="border-radius: 18px; border: 1px solid var(--line); background: var(--bg-inset); padding: 24px; display: flex; flex-direction: column; gap: 14px;">
+        <div style="font-size: 11px; letter-spacing: 0.14em; color: var(--text-faint); text-transform: uppercase;">Avatar &amp; chip</div>
+        <div style="display:flex; gap: 14px; align-items:center;">
+          <div style="width:48px;height:48px;border-radius:14px;background:
+            linear-gradient(135deg, oklch(0.55 0.16 220), oklch(0.4 0.18 280));
+            display:grid;place-items:center;">
+            <svg viewBox="0 0 200 200" width="28" height="28">
+              <path d="M48 56 L104 100 L48 144" stroke="#fff" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+              <circle cx="148" cy="100" r="14" fill="#fff"/>
+            </svg>
+          </div>
+          <div>
+            <div style="font-weight:700;">系统通知</div>
+            <div style="color:var(--text-mute); font-size:12.5px;">cc-anywhere · 1 个工具待批准</div>
+          </div>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:6px;">
+          <div style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:100px;background:rgba(255,255,255,0.05);border:1px solid var(--line);font-size:12px;">
+            <svg viewBox="0 0 200 200" width="13" height="13">
+              <path d="M48 56 L104 100 L48 144" stroke="var(--accent)" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+              <circle cx="148" cy="100" r="14" fill="var(--accent)"/>
+            </svg>
+            cc-anywhere
+          </div>
+          <div style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:100px;background:rgba(255,255,255,0.05);border:1px solid var(--line);font-size:12px;font-family:'JetBrains Mono';">
+            @cc/cli
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="footer">
+    <span>cc-anywhere · brand-guide v0.1 · 2026-05-13</span>
+    <span class="mono">⌘ 切换主题在 Tweaks 面板</span>
+  </div>
+
+</div>
+</div>
+</body>
+</html>

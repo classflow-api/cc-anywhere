@@ -41,9 +41,11 @@ struct TabStripView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .frame(width: 28, height: 28)
                     .foregroundColor(palette.textMuted)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("新建 Tab")
+            .help("新建 Tab（选择项目文件夹）")
+            .keyboardShortcut("n", modifiers: .command)
             Spacer(minLength: 4)
         }
         .frame(height: 38)

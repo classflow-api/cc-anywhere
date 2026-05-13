@@ -55,11 +55,24 @@ public final class ProcessHost: NSObject, ObservableObject {
 
         let env = makeEnvironment()
 
-        view.feed(text: "\u{1B}[36m[cc-anywhere] launching: \(exe) -c\nin: \(tab.folder.path)\u{1B}[0m\r\n")
+        // Only pass `-c` when the project already has Claude history.
+        // Otherwise `claude -c` exits 1 with "No conversation found to continue".
+        // PRD: "启动 `claude -c` 自动恢复对话历史，无则启新对话".
+        let encodedPath = tab.folder.path.replacingOccurrences(of: "/", with: "-")
+        let claudeProjectDir = FileManager.default
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects/\(encodedPath)")
+        let hasHistory = (try? FileManager.default.contentsOfDirectory(
+            at: claudeProjectDir, includingPropertiesForKeys: nil))?
+            .contains { $0.pathExtension == "jsonl" && !$0.lastPathComponent.hasPrefix("agent-") } ?? false
+
+        let args = hasHistory ? ["-c"] : []
+        let mode = hasHistory ? "-c (continue)" : "(new conversation)"
+        view.feed(text: "\u{1B}[36m[cc-anywhere] launching: \(exe) \(mode)\nin: \(tab.folder.path)\u{1B}[0m\r\n")
 
         view.startProcess(
             executable: exe,
-            args: ["-c"],
+            args: args,
             environment: env,
             execName: "claude",
             currentDirectory: tab.folder.path

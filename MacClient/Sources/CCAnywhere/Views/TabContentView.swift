@@ -40,6 +40,13 @@ struct SwiftTermHost: NSViewRepresentable {
                 term.bottomAnchor.constraint(equalTo: container.bottomAnchor)
             ])
             applyTheme(container)
+            // Defer so the view is in a window — only then can it accept first
+            // responder for keyboard input. Without this the user types into the
+            // terminal and nothing happens.
+            DispatchQueue.main.async { [weak term] in
+                guard let term = term, let window = term.window else { return }
+                window.makeFirstResponder(term)
+            }
         }
     }
 

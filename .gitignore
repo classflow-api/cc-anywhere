@@ -15,6 +15,9 @@ desktop.ini
 .env.local
 .env.*.local
 
+# 本地部署调试目录（含 TLS 私钥 / HMAC secret / SQLite / inbox 临时图片）
+local-deploy/
+
 # === MacClient (Swift / Xcode / SPM) ===
 MacClient/build/
 MacClient/.build/

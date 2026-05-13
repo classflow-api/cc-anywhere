@@ -131,9 +131,14 @@ final class WatchStream {
             copyDescription: nil
         )
 
+        // kFSEventStreamCreateFlagUseCFTypes is REQUIRED for our callback to
+        // safely cast `eventPaths` to NSArray. Without it, `eventPaths` is a
+        // raw `char**` (C string array) and unsafeBitCast → NSArray crashes
+        // with EXC_BAD_ACCESS when dereferenced.
         let flags = UInt32(
             kFSEventStreamCreateFlagFileEvents |
-            kFSEventStreamCreateFlagNoDefer
+            kFSEventStreamCreateFlagNoDefer |
+            kFSEventStreamCreateFlagUseCFTypes
         )
 
         let s = FSEventStreamCreate(
