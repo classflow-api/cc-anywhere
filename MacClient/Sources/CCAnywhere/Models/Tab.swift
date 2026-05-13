@@ -21,6 +21,10 @@ public struct Tab: Codable, Identifiable, Hashable, Sendable {
     /// but exclude from Codable.
     public var status: TabStatus = .idle
     public var exitCode: Int32? = nil
+    /// Human-readable reason populated when status == .error and the cause is
+    /// something more specific than just "process exited" — e.g. the claude
+    /// binary couldn't be found. Surfaced in TabContentView's error banner.
+    public var errorReason: String? = nil
     public var unread: Int = 0
     public var lastActivityAt: Date? = nil
 

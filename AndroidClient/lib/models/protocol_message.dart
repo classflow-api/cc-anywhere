@@ -61,6 +61,8 @@ abstract class ProtocolType {
 
   // 输入
   static const inputText = 'input.text';
+  static const inputImage = 'input.image';
+  static const imageFetched = 'image.fetched';
   static const inputError = 'input.error';
   static const imageUploadBegin = 'image.upload.begin';
   static const imageUploadUrl = 'image.upload.url';

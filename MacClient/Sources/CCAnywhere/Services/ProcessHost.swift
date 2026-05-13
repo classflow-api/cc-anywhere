@@ -18,6 +18,11 @@ public final class ProcessHost: NSObject, ObservableObject {
     /// Callback invoked when a Tab's process unexpectedly terminates.
     public var onProcessExited: (@MainActor (UUID, Int32?) -> Void)?
 
+    /// Optional user override for the claude binary path. Consulted by
+    /// `resolveClaudeBinary()` before the built-in candidate list. Wired up
+    /// from `PreferencesService.claudePathOverride`.
+    public var claudePathProvider: (@MainActor () -> String?)?
+
     public init(tabManager: TabManager, pidTracker: PIDTracker) {
         self.tabManager = tabManager
         self.pidTracker = pidTracker
@@ -28,14 +33,26 @@ public final class ProcessHost: NSObject, ObservableObject {
     /// Start (or recreate) a terminal view for the given Tab.
     public func startProcess(for tab: Tab) {
         if terminalsByTab[tab.id] != nil { return }   // already running
+
+        // Resolve claude binary first; if missing, surface a structured error
+        // rather than silently fall back to `/usr/bin/env -c` (which env would
+        // reject immediately and leave the user with an unexplained exit-2).
+        guard let exe = resolveClaudeBinary() else {
+            let reason = Self.claudeNotFoundReason(overrideUsed: claudePathProvider?())
+            log.error("startProcess failed: claude binary not found (tab=\(tab.id))")
+            tabManager?.updateStatus(tab.id,
+                                     status: .error,
+                                     exitCode: nil,
+                                     errorReason: reason)
+            return
+        }
+
         let view = LocalProcessTerminalView(frame: .zero)
         view.processDelegate = self
         // wire up callbacks via the LocalProcessTerminalViewDelegate; we'll
         // identify tabs by the view itself, mapped via reverse lookup.
         view.identifier = NSUserInterfaceItemIdentifier(tab.id.uuidString)
 
-        // Look up the claude binary
-        let exe = Self.findClaudeBinary()
         let env = makeEnvironment()
 
         view.feed(text: "\u{1B}[36m[cc-anywhere] launching: \(exe) -c\nin: \(tab.folder.path)\u{1B}[0m\r\n")
@@ -132,22 +149,67 @@ public final class ProcessHost: NSObject, ObservableObject {
         return env.map { "\($0.key)=\($0.value)" }
     }
 
-    /// Pick the first existing `claude` binary from common locations + PATH.
-    public static func findClaudeBinary() -> String {
+    /// The set of paths probed when no override is configured. Exposed so the
+    /// preferences UI can show the user where we look.
+    public static let defaultClaudeCandidates: [String] = {
         let home = NSHomeDirectory()
-        let candidates = [
+        return [
             "/usr/local/bin/claude",
             "/opt/homebrew/bin/claude",
             "\(home)/.local/bin/claude",
+            "\(home)/.claude/local/claude",
             "\(home)/.bun/bin/claude",
             "\(home)/.npm-global/bin/claude"
         ]
+    }()
+
+    /// Resolve the `claude` binary path. Honors the user-supplied override
+    /// from PreferencesService first; otherwise probes common install
+    /// locations. Returns `nil` when nothing executable is found — callers
+    /// MUST surface a user-visible error rather than fall back to a generic
+    /// shell (the previous behavior of returning `/usr/bin/env` masked a
+    /// missing-install as an opaque exit-2 with no UI feedback).
+    public func resolveClaudeBinary() -> String? {
         let fm = FileManager.default
-        for path in candidates where fm.isExecutableFile(atPath: path) {
+        if let override = claudePathProvider?()?.trimmingCharacters(in: .whitespaces),
+           !override.isEmpty {
+            if fm.isExecutableFile(atPath: override) {
+                return override
+            }
+            log.warn("claudePathOverride \(override) is not executable; falling back to search")
+        }
+        for path in Self.defaultClaudeCandidates where fm.isExecutableFile(atPath: path) {
             return path
         }
-        // Last resort: rely on PATH via /usr/bin/env
-        return "/usr/bin/env"
+        return nil
+    }
+
+    /// Static convenience used by code that doesn't have a ProcessHost
+    /// instance handy (e.g. preview / one-shot diagnostics). Returns `nil`
+    /// when no claude binary can be located. Honors no override.
+    public static func findClaudeBinary() -> String? {
+        let fm = FileManager.default
+        for path in defaultClaudeCandidates where fm.isExecutableFile(atPath: path) {
+            return path
+        }
+        return nil
+    }
+
+    /// Build a human-readable explanation for the missing-binary error,
+    /// including all the paths we just probed so users know where they could
+    /// install or where to point the override.
+    public static func claudeNotFoundReason(overrideUsed: String?) -> String {
+        var lines: [String] = []
+        lines.append("未找到 claude 命令。")
+        if let o = overrideUsed?.trimmingCharacters(in: .whitespaces), !o.isEmpty {
+            lines.append("当前偏好设置中指定的路径 \(o) 不可执行。")
+        }
+        lines.append("已搜索以下位置：")
+        for p in defaultClaudeCandidates {
+            lines.append("  • \(p)")
+        }
+        lines.append("请确认 Claude Code CLI 已安装，或在「偏好设置 > 通用」中手动指定 claude 路径。")
+        return lines.joined(separator: "\n")
     }
 }
 

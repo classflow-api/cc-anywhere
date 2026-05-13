@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -170,15 +171,20 @@ type ErrorPayload struct {
 }
 
 // ---- 4.2 设备 ----
+//
+// sub_token id is serialized as a JSON *string* on the wire to keep the
+// contract identical across Go (int64), Swift (String) and Dart (String).
+// The DB still stores INTEGER PRIMARY KEY; SubTokenID is the decimal repr
+// of that integer. Use FormatSubTokenID / ParseSubTokenID helpers.
 
 type DeviceSubtokenCreated struct {
 	SubToken  string `json:"sub_token"` // 原文，仅此次返回
-	ID        int64  `json:"id"`
+	ID        string `json:"id"`        // decimal repr of int64
 	ExpiresAt string `json:"expires_at"`
 }
 
 type DeviceBound struct {
-	SubTokenID  int64  `json:"sub_token_id"`
+	SubTokenID  string `json:"sub_token_id"` // decimal repr of int64
 	DeviceName  string `json:"device_name"`
 	DeviceModel string `json:"device_model"`
 	OSVersion   string `json:"os_version"`
@@ -190,7 +196,7 @@ type DeviceListResponse struct {
 }
 
 type DeviceInfo struct {
-	ID          int64  `json:"id"`
+	ID          string `json:"id"` // decimal repr of int64
 	DeviceName  string `json:"device_name"`
 	DeviceModel string `json:"device_model"`
 	OSVersion   string `json:"os_version"`
@@ -201,11 +207,25 @@ type DeviceInfo struct {
 }
 
 type DeviceRevoke struct {
-	SubTokenID int64 `json:"sub_token_id"`
+	SubTokenID string `json:"sub_token_id"` // decimal repr of int64
 }
 
 type DeviceRevoked struct {
-	SubTokenID int64 `json:"sub_token_id"`
+	SubTokenID string `json:"sub_token_id"` // decimal repr of int64
+}
+
+// FormatSubTokenID converts the DB int64 id to its on-wire string form.
+func FormatSubTokenID(id int64) string {
+	return strconv.FormatInt(id, 10)
+}
+
+// ParseSubTokenID parses an on-wire string id back to int64 for DB use.
+// Returns an error if the string is empty or not a valid integer.
+func ParseSubTokenID(s string) (int64, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty sub_token_id")
+	}
+	return strconv.ParseInt(s, 10, 64)
 }
 
 // ---- 4.3 Tab ----

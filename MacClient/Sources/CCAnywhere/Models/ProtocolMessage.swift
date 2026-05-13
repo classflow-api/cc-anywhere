@@ -34,12 +34,54 @@ public struct TabListPayload: Codable, Sendable {
     public init(tabs: [TabSummary]) { self.tabs = tabs }
 }
 
+public struct MsgHistoryRequestPayload: Codable, Sendable {
+    public let tabId: String
+    public let limit: Int?
+    public let before: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case tabId = "tab_id"
+        case limit
+        case before
+    }
+}
+
+public struct MsgHistoryResponsePayload: Codable, Sendable {
+    public let tabId: String
+    public let messages: [AnyJSON]
+    public let hasMore: Bool
+
+    public init(tabId: String, messages: [AnyJSON], hasMore: Bool) {
+        self.tabId = tabId
+        self.messages = messages
+        self.hasMore = hasMore
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case tabId = "tab_id"
+        case messages
+        case hasMore = "has_more"
+    }
+}
+
 public struct TabSummary: Codable, Sendable {
     public let id: String
     public let name: String
     public let folder: String
     public let claudeStatus: String
     public let lastActivityAt: String?
+
+    public init(id: String,
+                name: String,
+                folder: String,
+                claudeStatus: String,
+                lastActivityAt: String?) {
+        self.id = id
+        self.name = name
+        self.folder = folder
+        self.claudeStatus = claudeStatus
+        self.lastActivityAt = lastActivityAt
+    }
 
     private enum CodingKeys: String, CodingKey {
         case id, name, folder
@@ -51,6 +93,11 @@ public struct TabSummary: Codable, Sendable {
 public struct TabChangedPayload: Codable, Sendable {
     public let tab: TabSummary
     public let action: String   // "added" | "removed" | "renamed"
+
+    public init(tab: TabSummary, action: String) {
+        self.tab = tab
+        self.action = action
+    }
 }
 
 public struct MsgStreamPayload: Codable, Sendable {
@@ -86,11 +133,13 @@ public struct InputImagePayload: Codable, Sendable {
     public let imageUrl: String
     public let filename: String
     public let sha256: String?
+    public let uploadId: String
     private enum CodingKeys: String, CodingKey {
         case tabId = "tab_id"
         case imageUrl = "image_url"
         case filename
         case sha256
+        case uploadId = "upload_id"
     }
 }
 

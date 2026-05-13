@@ -17,6 +17,8 @@ public final class DependencyContainer: ObservableObject {
     public let wsClient: WSClient
     public let deviceManager: DeviceManager
     public let inputInjector: InputInjector
+    public let tabSyncBridge: TabSyncBridge
+    public let historyBridge: HistoryBridge
 
     private var cancellables = Set<AnyCancellable>()
     private let log = AppLogger.shared.tagged("Container")
@@ -31,6 +33,8 @@ public final class DependencyContainer: ObservableObject {
         self.wsClient = WSClient()
         self.deviceManager = DeviceManager(ws: wsClient, pref: preferences)
         self.inputInjector = InputInjector(processHost: processHost, ws: wsClient)
+        self.tabSyncBridge = TabSyncBridge(ws: wsClient, tabManager: tabManager)
+        self.historyBridge = HistoryBridge(ws: wsClient, tabManager: tabManager)
 
         // Reap any stale claude PIDs (R-M2-05) before doing anything else.
         pidTracker.reapStaleProcesses()
@@ -47,6 +51,12 @@ public final class DependencyContainer: ObservableObject {
         // Process exit hook: surface to UI / tabManager already handled inside ProcessHost
         processHost.onProcessExited = { [weak self] tabId, code in
             self?.log.info("process exited tab=\(tabId) code=\(code ?? -1)")
+        }
+
+        // Let ProcessHost read the user-configured claude path override
+        // without holding a strong reference to PreferencesService.
+        processHost.claudePathProvider = { [weak preferences] in
+            preferences?.claudePathOverride
         }
 
         // When a new tab is created, automatically start its watcher.

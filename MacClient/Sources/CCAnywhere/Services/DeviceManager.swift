@@ -81,7 +81,9 @@ public final class DeviceManager: ObservableObject {
                case .array(let arr) = dict["devices"] ?? .null {
                 devices = arr.compactMap { v -> Device? in
                     guard case .object(let d) = v else { return nil }
-                    let id = d["id"]?.asString ?? UUID().uuidString
+                    // Server sends id as JSON string per protocol contract;
+                    // tolerate number for older builds.
+                    guard let id = d["id"]?.asIdString else { return nil }
                     let name = d["device_name"]?.asString ?? "未命名设备"
                     let model = d["device_model"]?.asString
                     let osv = d["os_version"]?.asString
@@ -103,7 +105,7 @@ public final class DeviceManager: ObservableObject {
             }
         case "device.revoked":
             if let data = msg.data, case .object(let dict) = data,
-               let id = dict["sub_token_id"]?.asString {
+               let id = dict["sub_token_id"]?.asIdString {
                 devices.removeAll { $0.id == id }
             }
         default:

@@ -33,6 +33,6 @@ public struct ServerConfig: Codable, Equatable, Sendable {
     }
 
     public var wsURL: URL? {
-        URL(string: "wss://\(server):\(port)/")
+        URL(string: "wss://\(server):\(port)/ws")
     }
 }

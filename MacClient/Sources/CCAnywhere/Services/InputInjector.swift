@@ -63,9 +63,9 @@ public final class InputInjector {
             await reportInjectError(tabId: p.tabId, message: "图片下载或校验失败")
             return
         }
-        // Notify Server it can delete inbox file
+        // Notify Server it can delete inbox file. Server keys on upload_id.
         await ws?.send(ProtocolMessage(type: "image.fetched",
-                                       data: try? AnyJSON(encoding: ["filename": p.filename])))
+                                       data: try? AnyJSON(encoding: ["upload_id": p.uploadId])))
         let injection = "@\(localURL.path)\r"
         processHost?.write(to: tabId, string: injection)
     }

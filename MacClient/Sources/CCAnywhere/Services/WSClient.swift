@@ -91,8 +91,10 @@ public final class WSClient: NSObject, ObservableObject {
     }
 
     public func send(_ message: ProtocolMessage) async {
-        guard case .connected = state, let t = task else {
-            log.warn("send dropped (not connected): \(message.type)")
+        // Allow sending during .connecting too — bind handshake runs before state becomes .connected.
+        // task is nil only when .disconnected/.reconnecting, so this guard covers both.
+        guard let t = task else {
+            log.warn("send dropped (no task): \(message.type)")
             return
         }
         do {

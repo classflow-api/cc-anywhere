@@ -252,7 +252,7 @@ func (s *Service) StartPendingGC(ctx context.Context, interval time.Duration) {
 // ToProtocolInfo formats a SubToken for the device.list.response payload.
 func ToProtocolInfo(t *SubToken, online bool) protocol.DeviceInfo {
 	info := protocol.DeviceInfo{
-		ID:          t.ID,
+		ID:          protocol.FormatSubTokenID(t.ID),
 		DeviceName:  t.DeviceName.String,
 		DeviceModel: t.DeviceModel.String,
 		OSVersion:   t.OSVersion.String,

@@ -141,24 +141,57 @@ struct TabContentView: View {
     }
 
     private func processErrorBanner(palette: ColorPalette) -> some View {
-        HStack(spacing: 10) {
+        let title: String
+        let detail: String
+        if let reason = tab.errorReason, !reason.isEmpty {
+            // Structured pre-launch failure (e.g. claude binary not found).
+            // Use the first line as title, rest as detail.
+            let lines = reason.split(separator: "\n", omittingEmptySubsequences: false)
+            title = String(lines.first ?? "无法启动 Claude Code")
+            detail = lines.dropFirst().joined(separator: "\n")
+        } else {
+            title = "Claude Code 进程已退出"
+            detail = "退出码 \(tab.exitCode.map(String.init) ?? "?")"
+        }
+        return HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundColor(palette.warn)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Claude Code 进程已退出").font(AppFont.ui(size: 12, weight: .semibold))
+                .padding(.top, 2)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(AppFont.ui(size: 12, weight: .semibold))
                     .foregroundColor(palette.text)
-                Text("退出码 \(tab.exitCode.map(String.init) ?? "?")")
-                    .font(AppFont.ui(size: 11)).foregroundColor(palette.textMuted)
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(AppFont.ui(size: 11))
+                        .foregroundColor(palette.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
             }
             Spacer()
-            Button(action: restart) {
-                Text("重启").font(AppFont.ui(size: 11.5, weight: .semibold))
-                    .padding(.horizontal, 12).padding(.vertical, 6)
-                    .background(palette.accent)
-                    .foregroundColor(palette.accentFg)
-                    .clipShape(Capsule())
+            VStack(spacing: 6) {
+                Button(action: restart) {
+                    Text("重启").font(AppFont.ui(size: 11.5, weight: .semibold))
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(palette.accent)
+                        .foregroundColor(palette.accentFg)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                if tab.errorReason != nil {
+                    Button(action: openPreferences) {
+                        Text("偏好设置")
+                            .font(AppFont.ui(size: 11, weight: .medium))
+                            .padding(.horizontal, 10).padding(.vertical, 5)
+                            .overlay(
+                                Capsule().stroke(palette.line, lineWidth: 1)
+                            )
+                            .foregroundColor(palette.textMuted)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .buttonStyle(.plain)
         }
         .padding(10)
         .background(
@@ -169,6 +202,12 @@ struct TabContentView: View {
                         .stroke(palette.warn.opacity(0.30), lineWidth: 1)
                 )
         )
+    }
+
+    /// Open the standard preferences window so users can set the claude path.
+    /// Dispatches via the responder chain to `AppDelegate.openPreferences(_:)`.
+    private func openPreferences() {
+        NSApp.sendAction(#selector(AppDelegate.openPreferences(_:)), to: nil, from: nil)
     }
 
     private func commandBar(palette: ColorPalette) -> some View {

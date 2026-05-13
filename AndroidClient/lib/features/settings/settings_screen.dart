@@ -11,6 +11,15 @@ import '../../theme/theme_provider.dart';
 import '../../widgets/glass_card.dart';
 import '../../widgets/status_pill.dart';
 
+/// Mask a sub_token for UI display, keeping the last 4 characters when
+/// possible. Safe for tokens shorter than 4 characters (avoids the
+/// RangeError that `String.substring` / `num.clamp` would otherwise throw).
+String _maskSubToken(String? token) {
+  if (token == null || token.isEmpty) return '…';
+  if (token.length <= 4) return '…$token';
+  return '…${token.substring(token.length - 4)}';
+}
+
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
 
@@ -36,9 +45,7 @@ class SettingsScreen extends ConsumerWidget {
         children: [
           _DeviceCard(
             deviceName: cfg?.deviceName ?? 'Android',
-            subTokenSuffix: cfg?.subToken == null
-                ? '…'
-                : '…${cfg!.subToken.substring(cfg.subToken.length.clamp(0, cfg.subToken.length - 4))}',
+            subTokenSuffix: _maskSubToken(cfg?.subToken),
             online: macOnline && wsState == WsConnectionState.connected,
           ),
           const SizedBox(height: 18),

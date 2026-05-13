@@ -49,6 +49,14 @@ public final class PreferencesService: ObservableObject {
         didSet { persistGeneral() }
     }
 
+    /// Optional override for the `claude` binary path. When non-empty, takes
+    /// precedence over `findClaudeBinary()`'s common-location search. Lets
+    /// users on non-standard installs point at the right binary without
+    /// relying on PATH being inherited correctly.
+    @Published public var claudePathOverride: String {
+        didSet { persistGeneral() }
+    }
+
     // MARK: - Init
 
     public init() {
@@ -58,6 +66,7 @@ public final class PreferencesService: ObservableObject {
         self.followSystemAppearance = false
         self.terminalThemeId = TerminalThemes.default.id
         self.terminalFontSize = 13
+        self.claudePathOverride = ""
 
         // Load from disk
         loadServer()
@@ -89,6 +98,7 @@ public final class PreferencesService: ObservableObject {
         var followSystem: Bool?
         var terminalThemeId: String?
         var terminalFontSize: Int?
+        var claudePathOverride: String?
     }
 
     private func loadGeneral() {
@@ -101,6 +111,7 @@ public final class PreferencesService: ObservableObject {
         if let fs = prefs.followSystem { self.followSystemAppearance = fs }
         if let id = prefs.terminalThemeId { self.terminalThemeId = id }
         if let sz = prefs.terminalFontSize { self.terminalFontSize = sz }
+        if let p = prefs.claudePathOverride { self.claudePathOverride = p }
     }
 
     private func persistGeneral() {
@@ -108,7 +119,8 @@ public final class PreferencesService: ObservableObject {
             appearance: appearance.rawValue,
             followSystem: followSystemAppearance,
             terminalThemeId: terminalThemeId,
-            terminalFontSize: terminalFontSize
+            terminalFontSize: terminalFontSize,
+            claudePathOverride: claudePathOverride
         )
         do {
             let data = try JSONEncoder.pretty.encode(prefs)

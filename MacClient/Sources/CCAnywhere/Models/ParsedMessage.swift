@@ -80,4 +80,18 @@ public indirect enum AnyJSON: Codable, Sendable, Equatable {
         if case .string(let s) = self { return s }
         return nil
     }
+
+    /// Accepts either a JSON string or a JSON number and returns the decimal
+    /// string form. Used for id fields that may be serialized either way by
+    /// older Server builds.
+    public var asIdString: String? {
+        switch self {
+        case .string(let s):
+            return s
+        case .number(let n):
+            return String(Int64(n))
+        default:
+            return nil
+        }
+    }
 }

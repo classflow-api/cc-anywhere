@@ -228,7 +228,7 @@ func (s *Server) bind(ctx context.Context, conn *Connection, r *http.Request) er
 				boundAt = row.BoundAt.Time.UTC().Format(time.RFC3339)
 			}
 			notify := protocol.MustEnvelope(protocol.TypeDeviceBound, protocol.DeviceBound{
-				SubTokenID:  row.ID,
+				SubTokenID:  protocol.FormatSubTokenID(row.ID),
 				DeviceName:  req.DeviceName,
 				DeviceModel: req.DeviceModel,
 				OSVersion:   req.OSVersion,
@@ -307,7 +307,7 @@ func (s *Server) dispatchFromMac(ctx context.Context, conn *Connection, env *pro
 		}
 		resp, _ := protocol.NewEnvelope(protocol.TypeDeviceSubtokenCreated, protocol.DeviceSubtokenCreated{
 			SubToken:  plain,
-			ID:        row.ID,
+			ID:        protocol.FormatSubTokenID(row.ID),
 			ExpiresAt: row.ExpiresAt.Time.UTC().Format(time.RFC3339),
 		})
 		_ = conn.Send(resp)
@@ -332,7 +332,12 @@ func (s *Server) dispatchFromMac(ctx context.Context, conn *Connection, env *pro
 			conn.sendError(protocol.CodeInternal, "malformed device.revoke")
 			return
 		}
-		row, err := s.device.Revoke(ctx, req.SubTokenID)
+		idInt, err := protocol.ParseSubTokenID(req.SubTokenID)
+		if err != nil {
+			conn.sendError(protocol.CodeInvalidToken, "invalid sub_token_id")
+			return
+		}
+		row, err := s.device.Revoke(ctx, idInt)
 		if err != nil {
 			conn.sendError(protocol.CodeInvalidToken, err.Error())
 			return
@@ -342,7 +347,7 @@ func (s *Server) dispatchFromMac(ctx context.Context, conn *Connection, env *pro
 			env, _ := protocol.NewEnvelope(protocol.TypeForceDisconnect, protocol.ForceDisconnect{Reason: "revoked"})
 			phone.SendAndClose(env, "revoked")
 		}
-		resp, _ := protocol.NewEnvelope(protocol.TypeDeviceRevoked, protocol.DeviceRevoked{SubTokenID: row.ID})
+		resp, _ := protocol.NewEnvelope(protocol.TypeDeviceRevoked, protocol.DeviceRevoked{SubTokenID: protocol.FormatSubTokenID(row.ID)})
 		_ = conn.Send(resp)
 
 	case protocol.TypeImageFetched:
@@ -381,7 +386,7 @@ func (s *Server) dispatchFromPhone(ctx context.Context, conn *Connection, env *p
 		row, err := s.device.RevokeByHash(ctx, conn.TokenHash)
 		if err == nil && row != nil {
 			// Tell Mac so its UI updates.
-			notify, _ := protocol.NewEnvelope(protocol.TypeDeviceRevoked, protocol.DeviceRevoked{SubTokenID: row.ID})
+			notify, _ := protocol.NewEnvelope(protocol.TypeDeviceRevoked, protocol.DeviceRevoked{SubTokenID: protocol.FormatSubTokenID(row.ID)})
 			s.hub.MacConnSend(notify)
 		}
 		env, _ := protocol.NewEnvelope(protocol.TypeForceDisconnect, protocol.ForceDisconnect{Reason: "self_unbind"})
