@@ -68,6 +68,16 @@ const (
 	TypePresenceMacOffline = "presence.mac_offline"
 	TypePresencePhoneCount = "presence.phone_count"
 
+	// 4.7 Hook 实时桥接（cc-anywhere AskUserQuestion 远程交互）
+	TypeAskQuestionPending    = "ask.question.pending"
+	TypeAskQuestionAnswer     = "ask.question.answer"
+	TypeAskQuestionAnswered   = "ask.question.answered"
+	TypeAskQuestionTimeout    = "ask.question.timeout"
+	TypeAskToolApprovalAnswer = "ask.tool_approval.answer"
+	TypeToolProgressPre       = "tool.progress.pre"
+	TypeToolProgressPost      = "tool.progress.post"
+	TypeNotification          = "notification"
+
 	// 通用错误
 	TypeError = "error"
 )
@@ -351,4 +361,79 @@ type InputError struct {
 type PresencePhoneCount struct {
 	Count int      `json:"count"`
 	Names []string `json:"names"`
+}
+
+// ---- 4.7 Hook 实时桥接 ----
+//
+// 这些 payload 仅用于 Server 路由识别字段名，实际编解码在 Mac App 与 Phone
+// 端完成；Server 不解析内层结构，原样转发 Envelope.Data。
+
+// AskQuestionPending 由 Mac App 发起，Server 广播到所有 phone（及未来回流给
+// Mac App 自身的副本由客户端本地直接渲染，不走 Server）。
+// AskKind 取值：user_question | tool_approval。
+// AllowOther 控制 phone 端"自定义回答"输入框可见性。
+type AskQuestionPending struct {
+	RequestID  string                   `json:"request_id"`
+	TabID      string                   `json:"tab_id"`
+	ToolUseID  string                   `json:"tool_use_id"`
+	AskKind    string                   `json:"ask_kind"`
+	AllowOther bool                     `json:"allow_other"`
+	Questions  []map[string]interface{} `json:"questions,omitempty"`
+	ToolName   string                   `json:"tool_name,omitempty"`
+	ToolInput  map[string]interface{}   `json:"tool_input,omitempty"`
+}
+
+// AskQuestionAnswer 由 phone（或 Mac App 自身）回传给 mac 端 HookIpcServer，
+// 由 mac 端做 winner 锁仲裁。
+type AskQuestionAnswer struct {
+	RequestID string            `json:"request_id"`
+	Answers   map[string]string `json:"answers"`
+}
+
+// AskToolApprovalAnswer phone → server → mac，工具批准决策回执。
+// Mac 端 hook bridge 收到后翻译为 PreToolUse permissionDecision: allow|deny。
+// Reason 为可选用户附加拒绝原因（R-F4-005）；server 仅转发不解析内层结构。
+type AskToolApprovalAnswer struct {
+	RequestID string `json:"request_id"`
+	Decision  string `json:"decision"`         // "allow" | "deny"
+	Reason    string `json:"reason,omitempty"` // 用户附加的拒绝原因（可选）
+}
+
+// AskQuestionAnswered 由 mac 端在某 endpoint winner 确认后广播给所有 phone，
+// 让其他 phone 把卡片切到"已被回答"状态。
+type AskQuestionAnswered struct {
+	RequestID  string            `json:"request_id"`
+	AnsweredBy string            `json:"answered_by"`
+	Answers    map[string]string `json:"answers"`
+}
+
+// AskQuestionTimeout 由 mac 端在 5 分钟内无人回答时广播，所有 phone 撤销卡片。
+type AskQuestionTimeout struct {
+	RequestID string `json:"request_id"`
+	Reason    string `json:"reason"` // timeout | cancelled
+}
+
+// ToolProgressPre 由 mac 端在 PreToolUse hook 触发时推送给 phone。
+type ToolProgressPre struct {
+	TabID     string                 `json:"tab_id"`
+	ToolUseID string                 `json:"tool_use_id"`
+	ToolName  string                 `json:"tool_name"`
+	ToolInput map[string]interface{} `json:"tool_input"`
+}
+
+// ToolProgressPost 由 mac 端在 PostToolUse hook 触发时推送给 phone。
+type ToolProgressPost struct {
+	TabID     string `json:"tab_id"`
+	ToolUseID string `json:"tool_use_id"`
+	ToolName  string `json:"tool_name"`
+	Success   bool   `json:"success"`
+	Error     string `json:"error,omitempty"`
+}
+
+// Notification 由 mac 端在 Notification hook 触发时推送给 phone。
+type Notification struct {
+	TabID            string `json:"tab_id"`
+	NotificationType string `json:"notification_type"` // idle | permission_prompt | error
+	Title            string `json:"title"`
+	Message          string `json:"message"`
 }

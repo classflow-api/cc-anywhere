@@ -53,7 +53,7 @@ public final class ProcessHost: NSObject, ObservableObject {
         // identify tabs by the view itself, mapped via reverse lookup.
         view.identifier = NSUserInterfaceItemIdentifier(tab.id.uuidString)
 
-        let env = makeEnvironment()
+        let env = makeEnvironment(tabId: tab.id)
 
         // Only pass `-c` when the project already has Claude history.
         // Otherwise `claude -c` exits 1 with "No conversation found to continue".
@@ -143,7 +143,7 @@ public final class ProcessHost: NSObject, ObservableObject {
         return nil
     }
 
-    private func makeEnvironment() -> [String] {
+    private func makeEnvironment(tabId: UUID) -> [String] {
         var env = ProcessInfo.processInfo.environment
         env["TERM"] = "xterm-256color"
         if env["LANG"] == nil { env["LANG"] = "zh_CN.UTF-8" }
@@ -159,6 +159,8 @@ public final class ProcessHost: NSObject, ObservableObject {
         ]
         let existing = env["PATH"] ?? ""
         env["PATH"] = (extraPaths + [existing]).joined(separator: ":")
+        // Hook bridge uses this to route AskUserQuestion back to the owning tab.
+        env["CC_ANYWHERE_TAB_ID"] = tabId.uuidString
         return env.map { "\($0.key)=\($0.value)" }
     }
 

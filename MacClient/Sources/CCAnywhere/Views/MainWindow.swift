@@ -11,6 +11,7 @@ struct MainWindowView: View {
     @EnvironmentObject var ws: WSClient
     @EnvironmentObject var themeManager: ThemeManager
     @EnvironmentObject var fileViewerState: FileViewerState
+    @EnvironmentObject var askCardController: AskQuestionCardController
 
     var body: some View {
         let palette = themeManager.palette
@@ -57,6 +58,13 @@ struct MainWindowView: View {
                     }
                 }
             }
+
+            // AskUserQuestion / Tool Approval 卡片层。
+            // currentRequest=nil 时整层透明且不拦截 hit-test；非 nil 时遮罩主窗口。
+            // allowsHitTesting 根据 currentRequest 联动，避免无 ask 时挡掉主交互。
+            AskQuestionCardView(controller: askCardController)
+                .allowsHitTesting(askCardController.currentRequest != nil
+                                  || askCardController.recentlyAnswered != nil)
         }
         .foregroundColor(palette.text)
     }

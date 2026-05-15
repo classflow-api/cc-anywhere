@@ -21,6 +21,7 @@ struct CCAnywhereApp: App {
                 .environmentObject(container.processHost)
                 .environmentObject(container.deviceManager)
                 .environmentObject(container.fileViewerState)
+                .environmentObject(container.askCardController)
                 .frame(minWidth: 1200, minHeight: 760)
                 .background(WindowAccessor { window in
                     guard let w = window else { return }

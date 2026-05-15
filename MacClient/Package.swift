@@ -27,7 +27,9 @@ let package = Package(
             path: "Sources/CCAnywhere",
             exclude: ["Resources/Info.plist"],
             resources: [
-                // (No bundled fonts or assets for now; system fonts used as fallback.)
+                // hook bridge Python 脚本（由 HookBridgeDeployer 在启动时从 bundle 复制到
+                // ~/Library/Application Support/cc-anywhere/bin/ 并 chmod 0755）。
+                .copy("Resources/cc-anywhere-hook-bridge.py")
             ]
         )
     ]

@@ -48,7 +48,14 @@ func (r *Router) RouteFromMac(env *protocol.Envelope) *protocol.Envelope {
 		protocol.TypeTabListResponse,
 		protocol.TypeSlashListResponse,
 		protocol.TypeTabChanged,
-		protocol.TypeInputError:
+		protocol.TypeInputError,
+		// 4.7 Hook 实时桥接：mac→phone
+		protocol.TypeAskQuestionPending,
+		protocol.TypeAskQuestionAnswered,
+		protocol.TypeAskQuestionTimeout,
+		protocol.TypeToolProgressPre,
+		protocol.TypeToolProgressPost,
+		protocol.TypeNotification:
 		r.phone.BroadcastToPhones(env)
 		return nil
 	}
@@ -66,7 +73,10 @@ func (r *Router) RouteFromPhone(ctx context.Context, env *protocol.Envelope) *pr
 		protocol.TypeToolUseApprove,
 		protocol.TypeMsgHistoryRequest,
 		protocol.TypeTabListRequest,
-		protocol.TypeSlashListRequest:
+		protocol.TypeSlashListRequest,
+		// 4.7 Hook 实时桥接：phone→mac
+		protocol.TypeAskQuestionAnswer,
+		protocol.TypeAskToolApprovalAnswer:
 		if !r.mac.HasMac() {
 			return errorEnvelope(protocol.CodeMacOffline, "mac is offline")
 		}

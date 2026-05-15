@@ -15,6 +15,7 @@ final class PreferencesWindowController: NSWindowController {
         let view = PreferencesRootView(initialTab: initialTab)
             .environmentObject(container)
             .environmentObject(container.preferences)
+            .environmentObject(container.hookPreferences)
             .environmentObject(container.themeManager)
             .environmentObject(container.tabManager)
             .environmentObject(container.wsClient)
@@ -34,7 +35,7 @@ final class PreferencesWindowController: NSWindowController {
 }
 
 enum PrefsTab: String, CaseIterable, Identifiable {
-    case general, server, devices, themes, security, logs
+    case general, server, devices, themes, hook, security, logs
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -42,6 +43,7 @@ enum PrefsTab: String, CaseIterable, Identifiable {
         case .server:  return "Server 连接"
         case .devices: return "设备管理"
         case .themes:  return "终端主题"
+        case .hook:    return "远程 Hook"
         case .security:return "安全"
         case .logs:    return "日志与诊断"
         }
@@ -52,6 +54,7 @@ enum PrefsTab: String, CaseIterable, Identifiable {
         case .server:  return "wifi"
         case .devices: return "iphone"
         case .themes:  return "paintpalette"
+        case .hook:    return "bolt.horizontal.circle"
         case .security:return "lock"
         case .logs:    return "doc.text"
         }
@@ -94,6 +97,7 @@ struct PreferencesRootView: View {
                 case .server: ServerPane()
                 case .devices: DevicesPane()
                 case .themes: ThemesPane()
+                case .hook: HookPane()
                 case .security: SecurityPane()
                 case .logs: LogsPane()
                 }

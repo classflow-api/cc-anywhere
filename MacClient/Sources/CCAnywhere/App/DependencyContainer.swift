@@ -9,6 +9,7 @@ import Combine
 @MainActor
 public final class DependencyContainer: ObservableObject {
     public let preferences: PreferencesService
+    public let hookPreferences: HookPreferencesService
     public let themeManager: ThemeManager
     public let pidTracker: PIDTracker
     public let tabManager: TabManager
@@ -22,11 +23,38 @@ public final class DependencyContainer: ObservableObject {
     public let historyBridge: HistoryBridge
     public let fileViewerState: FileViewerState
 
+    // MARK: - AskUserQuestion 远程交互（阶段七 wiring）
+
+    /// hook bridge Python 脚本部署器；启动时把 bundle 内置脚本复制到
+    /// `~/Library/Application Support/cc-anywhere/bin/`。
+    public let hookBridgeDeployer: HookBridgeDeployer
+
+    /// settings.json 安装/卸载入口；HookPane 通过 settingsJsonInstaller 字段调用。
+    public let settingsJsonInstallerImpl: SettingsJsonInstaller
+
+    /// Mac App 端 AskQuestionCard 控制器；视图通过 environmentObject 绑定。
+    public let askCardController: AskQuestionCardController
+
+    /// 把 WSClient 适配为 HookIpcWsSink（payload → ProtocolMessage envelope）。
+    public let wsHookIpcSink: WSClientHookIpcSink
+
+    /// 把 TabManager 适配为 HookIpcTabRouter（线程安全 snapshot）。
+    public let hookIpcTabRouter: TabManagerHookIpcTabRouter
+
+    /// hook bridge ↔ Mac App 的 Unix domain socket 服务端。
+    /// 启动时机由 AppDelegate 根据 hookPreferences.enableRemoteHook 决定。
+    public let hookIpcServer: HookIpcServer
+
+    /// HookPane 通过本字段拿到 SettingsJsonInstaller（HookInstaller protocol）。
+    /// 早期为可空字段（T11 wiring 完成前），现 wiring 完成后恒非空。
+    public var settingsJsonInstaller: HookInstaller? = nil
+
     private var cancellables = Set<AnyCancellable>()
     private let log = AppLogger.shared.tagged("Container")
 
     public init() {
         self.preferences = PreferencesService()
+        self.hookPreferences = HookPreferencesService()
         self.themeManager = ThemeManager(pref: preferences)
         self.pidTracker = PIDTracker()
         self.tabManager = TabManager()
@@ -39,6 +67,27 @@ public final class DependencyContainer: ObservableObject {
         self.slashCommandBridge = SlashCommandBridge(ws: wsClient, tabManager: tabManager)
         self.historyBridge = HistoryBridge(ws: wsClient, tabManager: tabManager)
         self.fileViewerState = FileViewerState()
+
+        // hook bridge / settings.json wiring
+        let deployer = HookBridgeDeployer()
+        self.hookBridgeDeployer = deployer
+        self.settingsJsonInstallerImpl = SettingsJsonInstaller(
+            hookBridgePath: deployer.deployedScriptURL
+        )
+        self.askCardController = AskQuestionCardController()
+        self.wsHookIpcSink = WSClientHookIpcSink(ws: wsClient)
+        self.hookIpcTabRouter = TabManagerHookIpcTabRouter()
+        let socketURL = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first!
+            .appendingPathComponent("cc-anywhere/hook.sock")
+        self.hookIpcServer = HookIpcServer(
+            socketPath: socketURL,
+            tabRouter: self.hookIpcTabRouter
+        )
+
+        // HookPane 已能通过 settingsJsonInstaller 字段拿到 installer 实例。
+        self.settingsJsonInstaller = settingsJsonInstallerImpl
 
         // Reap any stale claude PIDs (R-M2-05) before doing anything else.
         pidTracker.reapStaleProcesses()
@@ -75,6 +124,86 @@ public final class DependencyContainer: ObservableObject {
                 self.jsonlWatcher.unwatchAllExcept(ids: knownTabIds)
             }
             .store(in: &cancellables)
+
+        // HookIpcServer 用的 tab router snapshot：订阅 TabManager.tabs。
+        hookIpcTabRouter.start(tabManager: tabManager, storeIn: &cancellables)
+
+        // HookIpcServer 内部需要 ws / jsonl / card 的弱引用。
+        // 这些 setter 是 actor 方法，需要 await；用 Task 包装。
+        let server = hookIpcServer
+        let wsSink = wsHookIpcSink
+        let jsonl: HookIpcJsonlSink = jsonlWatcher
+        let card = askCardController
+        Task {
+            await server.setWsClient(wsSink)
+            await server.setJsonlWatcher(jsonl)
+            await server.setCardController(card)
+        }
+        // AskCardController 反向持有 server 弱引用（用户提交时回调 actor）。
+        askCardController.hookIpcServer = hookIpcServer
+
+        // WSClient inbound：把 phone 端的 ask 回答路由进 HookIpcServer。
+        // - `ask.question.answer`：user_question 分支（answers map）
+        // - `ask.tool_approval.answer`：tool_approval 分支（decision + reason）
+        //   TODO(phone-T13)：phone 端目前尚未实现 tool_approval UI，下游
+        //   envelope 字段以本端期望为准；如 phone 团队最终选用别的字段名，
+        //   需双方对齐后调整 AskQuestionAnswerPayload / 解析逻辑。
+        wsClient.inbound
+            .filter { $0.type == "ask.question.answer" }
+            .sink { [weak self] msg in
+                self?.handleAskAnswerInbound(msg)
+            }
+            .store(in: &cancellables)
+        wsClient.inbound
+            .filter { $0.type == "ask.tool_approval.answer" }
+            .sink { [weak self] msg in
+                self?.handleAskToolApprovalInbound(msg)
+            }
+            .store(in: &cancellables)
+    }
+
+    /// 把 ws 进来的 `ask.question.answer` 投递到 HookIpcServer.actor。
+    /// 注：phone 端 envelope 里不带 sender 信息，answeredBy 一律标 "phone"
+    /// 占位（足够 UI / 日志区分本机 vs 远端）。
+    private func handleAskAnswerInbound(_ msg: ProtocolMessage) {
+        guard let data = msg.data,
+              let payload = decode(data, AskQuestionAnswerPayload.self) else {
+            log.warn("malformed ask.question.answer")
+            return
+        }
+        let server = hookIpcServer
+        Task {
+            await server.receiveAnswerFromWs(
+                requestId: payload.requestId,
+                answers: payload.answers,
+                answeredBy: "phone"
+            )
+        }
+    }
+
+    /// phone 端 tool_approval 回复。envelope 暂定 schema：
+    ///   { "request_id": "...", "decision": "allow"|"deny", "reason": "..." }
+    /// 解析为本地 dict 后转发给 HookIpcServer.receiveApprovalFromWs。
+    private func handleAskToolApprovalInbound(_ msg: ProtocolMessage) {
+        guard let data = msg.data, case .object(let obj) = data else {
+            log.warn("malformed ask.tool_approval.answer (not object)")
+            return
+        }
+        guard let requestId = obj["request_id"]?.asString,
+              let decision = obj["decision"]?.asString else {
+            log.warn("ask.tool_approval.answer missing request_id/decision")
+            return
+        }
+        let reason = obj["reason"]?.asString
+        let server = hookIpcServer
+        Task {
+            await server.receiveApprovalFromWs(
+                requestId: requestId,
+                decision: decision,
+                reason: reason,
+                answeredBy: "phone"
+            )
+        }
     }
 
     private var msgStreamBridge: MsgStreamBridge?
@@ -108,6 +237,10 @@ public final class DependencyContainer: ObservableObject {
         wsClient.disconnect()
         processHost.stopAll()
         jsonlWatcher.unwatchAll()
+        // HookIpcServer 也要停（清理 socket 文件 + cancel pending）。
+        // 进程即将退出，best-effort，不阻塞。
+        let server = hookIpcServer
+        Task.detached { await server.stop() }
     }
 }
 
@@ -140,4 +273,3 @@ private final class MsgStreamBridge: JSONLWatcherDelegate {
         }
     }
 }
-

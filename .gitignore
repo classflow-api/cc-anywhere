@@ -32,6 +32,10 @@ MacClient/Pods/
 MacClient/.swiftpm/
 MacClient/Package.resolved
 
+# Python __pycache__（hook bridge 脚本本地 py_compile 验证产物）
+__pycache__/
+*.pyc
+
 # === AndroidClient (Flutter / Android) ===
 AndroidClient/.dart_tool/
 AndroidClient/.flutter-plugins

@@ -6,8 +6,11 @@ import '../../data/chat_repository.dart';
 import '../../data/tab_repository.dart';
 import '../../data/ws_client.dart';
 import '../../models/tab.dart';
+import '../../services/ask_question_controller.dart';
 import '../../theme/color_tokens.dart';
 import '../../widgets/pulse_dot.dart';
+import '../../widgets/tool_progress_indicator.dart';
+import 'widgets/ask_user_question_card_realtime.dart';
 import 'widgets/input_bar.dart';
 import 'widgets/message_card_list.dart';
 
@@ -21,6 +24,9 @@ class ChatScreen extends ConsumerStatefulWidget {
 }
 
 class _ChatScreenState extends ConsumerState<ChatScreen> {
+  /// 已弹过 snackbar 的 request_id,避免同一次 timeout 被 build 重复触发。
+  final Set<String> _shownTimeoutToasts = {};
+
   @override
   void initState() {
     super.initState();
@@ -38,6 +44,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void dispose() {
     ref.read(chatRepositoryProvider).setActiveTab(null);
     super.dispose();
+  }
+
+  /// 监听 ask.question 实时态:超时弹一次 snackbar。
+  void _maybeShowTimeoutToast(AskQuestionState ask) {
+    final p = ask.pending;
+    if (!ask.timedOut || p == null) return;
+    if (_shownTimeoutToasts.contains(p.requestId)) return;
+    _shownTimeoutToasts.add(p.requestId);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('问题已超时'),
+          duration: Duration(seconds: 2),
+        ),
+      );
+    });
   }
 
   @override
@@ -63,6 +86,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     final state = chatAsync.valueOrNull ??
         TabChatState(tabId: widget.tabId, messages: const []);
+
+    // AskUserQuestion 实时模式状态(hook 桥接驱动)
+    final askState =
+        ref.watch(askQuestionStateProvider(widget.tabId)).valueOrNull ??
+            AskQuestionState.empty;
+    _maybeShowTimeoutToast(askState);
+    final askPending = askState.pending;
 
     return Scaffold(
       body: SafeArea(
@@ -91,6 +121,40 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 ),
               ),
             ),
+            // 工具进度指示器 — 位于消息列表底部 / 输入栏上方。
+            // 监听 tool.progress.pre/post 协议消息,运行中显示灰色进度条,
+            // 失败时变红色 toast 5 秒后消失。详见 §3.4.3、§4.7.2。
+            ToolProgressIndicator(tabId: widget.tabId),
+            // 实时 AskUserQuestion 卡片:位于消息列表下、输入栏上,
+            // pending 非空时显示;answered 后 controller 3s 后自动清空,
+            // timeout 后立即清空并弹 snackbar。
+            if (askPending != null)
+              AskUserQuestionCardRealtime(
+                key: ValueKey('ask_realtime_${askPending.requestId}'),
+                payload: askPending,
+                answered: askState.answered,
+                onSubmit: (answers) {
+                  ref
+                      .read(askQuestionControllerProvider)
+                      .submit(widget.tabId, answers);
+                },
+                onDismiss: () {
+                  ref
+                      .read(askQuestionControllerProvider)
+                      .dismiss(widget.tabId);
+                },
+                // F4 危险工具远程批准:tool_approval 分支专用回调,
+                // 触发 ask.tool_approval.answer 协议消息 → server → mac winner 锁仲裁。
+                onApprovalDecision: (decision) {
+                  ref
+                      .read(askQuestionControllerProvider)
+                      .submitApproval(
+                        widget.tabId,
+                        requestId: askPending.requestId,
+                        decision: decision,
+                      );
+                },
+              ),
             InputBar(
               tabId: widget.tabId,
               enabled: inputEnabled,

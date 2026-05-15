@@ -3,6 +3,7 @@
 
 import Foundation
 import AppKit
+import Combine
 
 @MainActor
 public final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -19,6 +20,9 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     var initialPrefsTab: PrefsTab = .server
     private var keyMonitor: Any?
 
+    /// AskUserQuestion 远程交互 wiring：偏好开关变化订阅句柄。
+    private var hookPrefsCancellables = Set<AnyCancellable>()
+
     private let log = AppLogger.shared.tagged("AppDelegate")
 
     public override init() {
@@ -34,6 +38,15 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
 
         container?.appDidFinishLaunching()
+
+        // AskUserQuestion 远程交互（阶段七）启动序列：
+        //   1. 部署 hook bridge Python 脚本（失败仅记录，不影响 App 启动）
+        //   2. 如偏好已开启远程 hook，立即启动 HookIpcServer
+        //   3. 订阅偏好变更，开关 ↔ server 生命周期联动
+        bootstrapHookBridge()
+        bootstrapHookIpcServer()
+        subscribeHookPrefsChanges()
+
         // Install our menu
         installMainMenu()
         // Cmd+, 双保险：SwiftTerm 可能 swallow keyboard events 让菜单接不到，
@@ -82,6 +95,66 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     public func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
+    }
+
+    // MARK: - AskUserQuestion 远程交互 wiring
+
+    /// 启动时部署 hook bridge Python 脚本到 Application Support。
+    /// 失败仅记日志，不影响 App 启动（用户未开启远程 hook 时本步骤的副作用为空）。
+    private func bootstrapHookBridge() {
+        guard let container = container else { return }
+        do {
+            let wrote = try container.hookBridgeDeployer.deployIfNeeded()
+            log.info("hook bridge deploy: wrote=\(wrote) path=\(container.hookBridgeDeployer.deployedScriptURL.path)")
+        } catch {
+            log.error("hook bridge deploy failed: \(error)")
+        }
+    }
+
+    /// 如偏好开启则启动 HookIpcServer。
+    private func bootstrapHookIpcServer() {
+        guard let container = container else { return }
+        guard container.hookPreferences.enableRemoteHook else {
+            log.info("HookIpcServer not started: enableRemoteHook=false")
+            return
+        }
+        let server = container.hookIpcServer
+        Task {
+            do {
+                try await server.start()
+            } catch {
+                AppLogger.shared.tagged("AppDelegate")
+                    .error("HookIpcServer start failed: \(error)")
+            }
+        }
+    }
+
+    /// 监听 hookPreferences.enableRemoteHook：
+    ///   - false → true：start server
+    ///   - true → false：stop server（settings.json 卸载已在 HookPane 内完成）
+    /// enableToolApprovalRemote 的写盘由 HookPane.onChange 直接调 enableM4/disableM4
+    /// 处理，本订阅不再重复做事。
+    private func subscribeHookPrefsChanges() {
+        guard let container = container else { return }
+        let server = container.hookIpcServer
+        container.hookPreferences.$enableRemoteHook
+            .removeDuplicates()
+            .dropFirst()    // 跳过初始值（启动序列已经处理）
+            .sink { newValue in
+                Task {
+                    if newValue {
+                        do {
+                            try await server.start()
+                        } catch {
+                            AppLogger.shared.tagged("AppDelegate")
+                                .error("HookIpcServer start failed: \(error)")
+                        }
+                    } else {
+                        await server.stop()
+                    }
+                }
+            }
+            .store(in: &hookPrefsCancellables)
     }
 
     // MARK: - Menu

@@ -185,3 +185,232 @@ public struct ErrorPayload: Codable, Sendable {
     public let code: String
     public let message: String
 }
+
+// MARK: - AskUserQuestion 远程交互 payloads
+
+public struct AskQuestionOption: Codable, Sendable {
+    public let label: String
+    public let description: String?
+
+    public init(label: String, description: String? = nil) {
+        self.label = label
+        self.description = description
+    }
+}
+
+public struct AskQuestionItem: Codable, Sendable {
+    public let question: String
+    public let header: String
+    public let multiSelect: Bool
+    public let options: [AskQuestionOption]
+
+    public init(question: String,
+                header: String,
+                multiSelect: Bool,
+                options: [AskQuestionOption]) {
+        self.question = question
+        self.header = header
+        self.multiSelect = multiSelect
+        self.options = options
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        // multiSelect 用 camelCase（保持与 AskUserQuestion 工具原生 schema 一致，
+        // 也与三端协议（需求规格说明书 §3.2.1）一致；该字段是 questions 数组元素
+        // 内部字段，由 Claude SDK 写入 tool_input，必须保留 camelCase。
+        case question
+        case header
+        case multiSelect
+        case options
+    }
+}
+
+public struct AskQuestionPendingPayload: Codable, Sendable {
+    public let requestId: String
+    public let tabId: String
+    public let toolUseId: String
+    public let askKind: String      // "user_question" | "tool_approval"
+    public let allowOther: Bool
+    public let questions: [AskQuestionItem]?
+    public let toolName: String?
+    public let toolInput: AnyJSON?
+
+    public init(requestId: String,
+                tabId: String,
+                toolUseId: String,
+                askKind: String,
+                allowOther: Bool,
+                questions: [AskQuestionItem]? = nil,
+                toolName: String? = nil,
+                toolInput: AnyJSON? = nil) {
+        self.requestId = requestId
+        self.tabId = tabId
+        self.toolUseId = toolUseId
+        self.askKind = askKind
+        self.allowOther = allowOther
+        self.questions = questions
+        self.toolName = toolName
+        self.toolInput = toolInput
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case requestId = "request_id"
+        case tabId = "tab_id"
+        case toolUseId = "tool_use_id"
+        case askKind = "ask_kind"
+        case allowOther = "allow_other"
+        case questions
+        case toolName = "tool_name"
+        case toolInput = "tool_input"
+    }
+}
+
+public struct AskQuestionAnswerPayload: Codable, Sendable {
+    public let requestId: String
+    public let answers: [String: String]
+
+    public init(requestId: String, answers: [String: String]) {
+        self.requestId = requestId
+        self.answers = answers
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case requestId = "request_id"
+        case answers
+    }
+}
+
+/// Phone → Mac，tool_approval 决策回执（F4 危险工具远程批准）。
+///
+/// envelope.type = "ask.tool_approval.answer"。Mac 端
+/// `DependencyContainer.handleAskToolApprovalInbound` 解析后投递给
+/// `HookIpcServer.receiveApprovalFromWs`，进入 winner 锁仲裁。
+/// 字段命名与 Server `protocol.AskToolApprovalAnswer` 严格对齐（snake_case）。
+public struct AskToolApprovalAnswerPayload: Codable, Sendable {
+    public let requestId: String
+    /// "allow" | "deny"
+    public let decision: String
+    /// 用户附加的拒绝原因，可选（R-F4-005）。
+    public let reason: String?
+
+    public init(requestId: String, decision: String, reason: String?) {
+        self.requestId = requestId
+        self.decision = decision
+        self.reason = reason
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case requestId = "request_id"
+        case decision
+        case reason
+    }
+}
+
+public struct AskQuestionAnsweredPayload: Codable, Sendable {
+    public let requestId: String
+    public let answeredBy: String
+    public let answers: [String: String]
+
+    public init(requestId: String, answeredBy: String, answers: [String: String]) {
+        self.requestId = requestId
+        self.answeredBy = answeredBy
+        self.answers = answers
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case requestId = "request_id"
+        case answeredBy = "answered_by"
+        case answers
+    }
+}
+
+public struct AskQuestionTimeoutPayload: Codable, Sendable {
+    public let requestId: String
+    public let reason: String
+
+    public init(requestId: String, reason: String) {
+        self.requestId = requestId
+        self.reason = reason
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case requestId = "request_id"
+        case reason
+    }
+}
+
+public struct ToolProgressPrePayload: Codable, Sendable {
+    public let tabId: String
+    public let toolUseId: String
+    public let toolName: String
+    public let toolInput: AnyJSON
+
+    public init(tabId: String,
+                toolUseId: String,
+                toolName: String,
+                toolInput: AnyJSON) {
+        self.tabId = tabId
+        self.toolUseId = toolUseId
+        self.toolName = toolName
+        self.toolInput = toolInput
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case tabId = "tab_id"
+        case toolUseId = "tool_use_id"
+        case toolName = "tool_name"
+        case toolInput = "tool_input"
+    }
+}
+
+public struct ToolProgressPostPayload: Codable, Sendable {
+    public let tabId: String
+    public let toolUseId: String
+    public let toolName: String
+    public let success: Bool
+    public let error: String?
+
+    public init(tabId: String,
+                toolUseId: String,
+                toolName: String,
+                success: Bool,
+                error: String? = nil) {
+        self.tabId = tabId
+        self.toolUseId = toolUseId
+        self.toolName = toolName
+        self.success = success
+        self.error = error
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case tabId = "tab_id"
+        case toolUseId = "tool_use_id"
+        case toolName = "tool_name"
+        case success
+        case error
+    }
+}
+
+public struct NotificationPayload: Codable, Sendable {
+    public let tabId: String
+    public let notificationType: String
+    public let title: String
+    public let message: String
+
+    public init(tabId: String,
+                notificationType: String,
+                title: String,
+                message: String) {
+        self.tabId = tabId
+        self.notificationType = notificationType
+        self.title = title
+        self.message = message
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case tabId = "tab_id"
+        case notificationType = "notification_type"
+        case title
+        case message
+    }
+}

@@ -7,6 +7,7 @@ import 'data/ws_client.dart';
 import 'routes/app_router.dart';
 import 'theme/theme_data.dart';
 import 'theme/theme_provider.dart';
+import 'widgets/notification_toast.dart';
 
 class CcAnywhereApp extends ConsumerStatefulWidget {
   const CcAnywhereApp({super.key});
@@ -42,6 +43,8 @@ class _CcAnywhereAppState extends ConsumerState<CcAnywhereApp> {
   Widget build(BuildContext context) {
     final router = ref.watch(appRouterProvider);
     final mode = ref.watch(themeModeProvider);
+    // 启动 toast service —— 触发 ws inbound 监听
+    ref.watch(notificationToastServiceProvider);
     return MaterialApp.router(
       title: 'cc-anywhere',
       debugShowCheckedModeBanner: false,
@@ -49,6 +52,10 @@ class _CcAnywhereAppState extends ConsumerState<CcAnywhereApp> {
       themeMode: mode,
       theme: AppThemeData.build(brightness: Brightness.light),
       darkTheme: AppThemeData.build(brightness: Brightness.dark),
+      builder: (context, child) {
+        // 全局顶部 Toast 容器 —— R-F3-002 队列、R-F3-003 颜色由 widget 内部处理
+        return NotificationToastHost(child: child ?? const SizedBox.shrink());
+      },
     );
   }
 }

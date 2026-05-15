@@ -23,6 +23,11 @@ public final class JSONLWatcher {
     private let queue = DispatchQueue(label: "cc-anywhere.jsonl-watcher", qos: .userInitiated)
     private var streams: [UUID: WatchStream] = [:]
 
+    /// hook 已实时推送过的 tool_use_id，跳过 JSONL 中的对应记录避免双推。
+    /// TTL 10 分钟。R-F5-001/002/003
+    private var hookPushedToolUseIds: [String: Date] = [:]
+    private let hookPushedTTL: TimeInterval = 600
+
     public init() {}
 
     public func watch(tab: Tab) {
@@ -34,6 +39,12 @@ public final class JSONLWatcher {
             throttleInterval: throttleInterval,
             queue: queue,
             log: log,
+            hookPushedCheck: { [weak self] toolUseId in
+                guard let self = self else { return false }
+                // queue.sync 安全读：本闭包总是在 watcher.queue 上被 WatchStream 调用，
+                // 直接读取即可（同 queue 不会自我死锁）。
+                return self.isHookPushed(toolUseId: toolUseId)
+            },
             onBatch: { [weak self] (id, batch) in
                 guard let self = self else { return }
                 self.delegate?.watcher(self, didReceive: batch, for: id)
@@ -42,6 +53,19 @@ public final class JSONLWatcher {
         stream.start()
         streams[tab.id] = stream
         log.info("watching \(dir.path) for tab=\(tab.id)")
+    }
+
+    /// 同 queue 调用（来自 WatchStream），直接判定并顺带清理过期项。
+    fileprivate func isHookPushed(toolUseId: String) -> Bool {
+        let now = Date()
+        if let ts = hookPushedToolUseIds[toolUseId] {
+            if now.timeIntervalSince(ts) < hookPushedTTL {
+                return true
+            } else {
+                hookPushedToolUseIds.removeValue(forKey: toolUseId)
+            }
+        }
+        return false
     }
 
     public func unwatch(tabId: UUID) {
@@ -89,6 +113,9 @@ final class WatchStream {
     let queue: DispatchQueue
     let log: TaggedLogger
     let onBatch: (UUID, [ParsedMessage]) -> Void
+    /// 由 JSONLWatcher 注入：判断给定 tool_use_id 是否已被 hook 实时推送过。
+    /// 闭包必须在 watcher.queue 上被调用（线程安全约束）。
+    let hookPushedCheck: (String) -> Bool
 
     private var stream: FSEventStreamRef?
     private var activeSessionFile: URL?
@@ -103,12 +130,14 @@ final class WatchStream {
          throttleInterval: TimeInterval,
          queue: DispatchQueue,
          log: TaggedLogger,
+         hookPushedCheck: @escaping (String) -> Bool,
          onBatch: @escaping (UUID, [ParsedMessage]) -> Void) {
         self.tabId = tabId
         self.directory = directory
         self.throttleInterval = throttleInterval
         self.queue = queue
         self.log = log
+        self.hookPushedCheck = hookPushedCheck
         self.onBatch = onBatch
     }
 
@@ -273,6 +302,14 @@ final class WatchStream {
     }
 
     private func shouldEmit(_ msg: ParsedMessage) -> Bool {
+        // R-F5-001/002/003：若该消息包含的 tool_use_id 已被 hook 实时推送过，
+        // 则跳过此条 JSONL，避免对手机端双推。
+        let toolUseIds = extractToolUseIds(from: msg.raw)
+        for id in toolUseIds where hookPushedCheck(id) {
+            log.info("skip JSONL row dedup-by-hook tool_use_id=\(id)")
+            return false
+        }
+
         if let u = msg.uuid {
             if seenUuids.contains(u) { return false }
             seenUuids.insert(u)
@@ -286,6 +323,27 @@ final class WatchStream {
         return true
     }
 
+    /// 从 JSONL raw 行中提取所有 tool_use_id（assistant.tool_use.id 与 user.tool_result.tool_use_id）。
+    private func extractToolUseIds(from raw: String) -> [String] {
+        guard let data = raw.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        let type = obj["type"] as? String ?? ""
+        guard type == "assistant" || type == "user" else { return [] }
+        var ids: [String] = []
+        if let message = obj["message"] as? [String: Any],
+           let content = message["content"] as? [[String: Any]] {
+            for item in content {
+                let itemType = item["type"] as? String ?? ""
+                if itemType == "tool_use", let id = item["id"] as? String {
+                    ids.append(id)
+                } else if itemType == "tool_result", let id = item["tool_use_id"] as? String {
+                    ids.append(id)
+                }
+            }
+        }
+        return ids
+    }
+
     private func scheduleThrottle() {
         throttleWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -297,5 +355,25 @@ final class WatchStream {
         }
         throttleWorkItem = work
         queue.asyncAfter(deadline: .now() + throttleInterval, execute: work)
+    }
+}
+
+// MARK: - HookIpcJsonlSink conformance
+
+extension JSONLWatcher: HookIpcJsonlSink {
+    /// Hook（PreToolUse / Stop / SessionEnd 等）已实时推送过该 tool_use 后调用，
+    /// 后续 JSONL 中对应的 assistant.tool_use / user.tool_result 会被跳过。
+    /// R-F5-001/002/003。
+    public func markHookPushed(toolUseId: String) {
+        queue.async { [weak self] in
+            guard let self = self else { return }
+            self.hookPushedToolUseIds[toolUseId] = Date()
+            // 顺带清理过期项
+            let now = Date()
+            let ttl = self.hookPushedTTL
+            self.hookPushedToolUseIds = self.hookPushedToolUseIds.filter {
+                now.timeIntervalSince($0.value) < ttl
+            }
+        }
     }
 }

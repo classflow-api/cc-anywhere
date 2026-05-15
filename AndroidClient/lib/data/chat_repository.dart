@@ -6,6 +6,7 @@ import 'package:uuid/uuid.dart';
 
 import '../models/message.dart';
 import '../models/protocol_message.dart';
+import '../services/dedup_service.dart';
 import 'image_ref_store.dart';
 import 'image_upload_service.dart';
 import 'logger.dart';
@@ -49,8 +50,11 @@ class TabChatState {
 }
 
 class ChatRepository {
-  ChatRepository(this._ws, this._tabs, this._log, this._uploadService, this._imageRefStore) {
+  ChatRepository(this._ws, this._tabs, this._log, this._uploadService,
+      this._imageRefStore, this._dedup) {
     _sub = _ws.inbound.listen(_onInbound);
+    // 预热 dedup 缓存,让 _mergeMessages 中的同步 dedup 调用走快路径(in-memory)。
+    _dedup?.prewarm();
   }
 
   final WsClient _ws;
@@ -58,6 +62,9 @@ class ChatRepository {
   final TabRepository _tabs;
   final AppLogger _log;
   final ImageUploadService _uploadService;
+  /// hook 实时通道 + JSONL 旁观通道按 tool_use_id 双端去重(F5)。
+  /// 启动前若 SharedPreferences 还未 ready 取 null,此时仅靠 in-memory uuid 索引兜底。
+  final DedupService? _dedup;
   final _uuid = const Uuid();
 
   // tabId -> state
@@ -359,7 +366,43 @@ class ChatRepository {
     return found.localUuid;
   }
 
+  /// hook 实时通道按 tool_use_id 去重。
+  ///
+  /// `ask.question.pending` / `tool.progress.pre` / `tool.progress.post` 三类协议
+  /// 都携带 `tool_use_id`,经由 server 转发,phone 端在分发前先查 DedupService 决定是否处理。
+  /// 与 JSONL 旁观通道(_mergeMessages 中 MessageKind.toolUse 路径)使用同一份 ttl 缓存,
+  /// 实现 hook + JSONL 双通道去重。
+  ///
+  /// 返回 true 表示首次见到、应继续处理；false 表示已处理过应跳过。
+  /// 异常路径(没有 tool_use_id / DedupService 未就绪)默认放行,避免误吞消息。
+  Future<bool> _checkHookDedup(ProtocolMessage m) async {
+    final dedup = _dedup;
+    if (dedup == null) return true;
+    final toolUseId = m.data['tool_use_id'];
+    if (toolUseId is! String || toolUseId.isEmpty) return true;
+    final shouldHandle = await dedup.checkAndMark(toolUseId);
+    if (!shouldHandle) {
+      _log.debug('Chat', 'dedup skip hook ${m.type} tool_use_id=$toolUseId');
+    }
+    return shouldHandle;
+  }
+
   void _onInbound(ProtocolMessage m) {
+    // hook 实时桥接通道:统一在分发入口对 ask/progress 系列消息做 tool_use_id 去重。
+    // 这三类协议的具体渲染逻辑由后续 T13/T14/T15 子 agent 合入,此处仅守门。
+    switch (m.type) {
+      case 'ask.question.pending':
+      case 'tool.progress.pre':
+      case 'tool.progress.post':
+        // fire-and-forget:dedup 决策不阻塞主流程,后续渲染逻辑应使用 _checkHookDedup
+        // 在自己的处理路径中显式 await 决策。这里先记日志,确保命中可观测。
+        _checkHookDedup(m).then((shouldHandle) {
+          if (!shouldHandle) {
+            _log.info('Chat', 'hook ${m.type} deduped (already handled)');
+          }
+        });
+        break;
+    }
     switch (m.type) {
       case ProtocolType.imageDownloadResponse:
         final uploadId = m.data['upload_id'] as String?;
@@ -493,6 +536,22 @@ class ChatRepository {
           continue;
         }
       }
+      // JSONL 旁观通道 tool_use 行的 dedup:hook 实时通道若已为同 tool_use_id 推送过卡片,
+      // 这里跳过避免渲染两份(R-F5-001 ~ R-F5-004)。
+      // 注:askUserQuestion 是 AskUserQuestion 工具的特例,kind 在 message.dart 解析时
+      //   被单独标识,也按 toolUseId 去重。
+      // tool_result 不做 dedup — tool_result 是 hook 通道没有的,JSONL 是唯一源。
+      if ((m.kind == MessageKind.toolUse || m.kind == MessageKind.askUserQuestion) &&
+          (m.toolUseId?.isNotEmpty ?? false) &&
+          _dedup != null) {
+        final id = m.toolUseId!;
+        if (_dedup.hasHandledSync(id)) {
+          // 已被 hook 通道处理,跳过 JSONL 渲染。
+          continue;
+        }
+        // 首次见到:标记,后续 hook 或 JSONL 再来都将命中 dedup。
+        _dedup.markSync(id);
+      }
       if (index.contains(m.uuid)) {
         final i = list.indexWhere((x) => x.uuid == m.uuid);
         if (i >= 0) list[i] = m;
@@ -621,6 +680,9 @@ final chatRepositoryProvider = Provider<ChatRepository>((ref) {
     // imageRefStore 是 FutureProvider — provider 在 App 启动时 prefetch,
     // 取 valueOrNull 避免阻塞 chat 初始化(首次启动若还没 ready,本次会跳过记映射,无害)
     ref.read(imageRefStoreProvider).valueOrNull,
+    // 同理 dedupService:async 初始化 SharedPreferences,首次启动若未 ready,
+    // 走 in-memory 兜底(hasHandledSync 在 _loaded=false 时返回 false 放行)。
+    ref.read(dedupServiceProvider).valueOrNull,
   );
   ref.onDispose(r.dispose);
   return r;
