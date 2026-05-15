@@ -5,9 +5,14 @@
 import SwiftUI
 import AppKit
 
+extension Notification.Name {
+    public static let ccPrefsSelectTab = Notification.Name("cc.prefs.selectTab")
+}
+
 final class PreferencesWindowController: NSWindowController {
-    static func make(container: DependencyContainer) -> PreferencesWindowController {
-        let view = PreferencesRootView()
+    static func make(container: DependencyContainer,
+                     initialTab: PrefsTab = .server) -> PreferencesWindowController {
+        let view = PreferencesRootView(initialTab: initialTab)
             .environmentObject(container)
             .environmentObject(container.preferences)
             .environmentObject(container.themeManager)
@@ -54,9 +59,13 @@ enum PrefsTab: String, CaseIterable, Identifiable {
 }
 
 struct PreferencesRootView: View {
-    @State private var selected: PrefsTab = .server
+    @State var selected: PrefsTab = .server
     @EnvironmentObject var themeManager: ThemeManager
     @EnvironmentObject var preferences: PreferencesService
+
+    init(initialTab: PrefsTab = .server) {
+        _selected = State(initialValue: initialTab)
+    }
 
     var body: some View {
         let palette = themeManager.palette
@@ -94,6 +103,9 @@ struct PreferencesRootView: View {
         }
         .preferredColorScheme(preferences.appearance == .light ? .light :
                               (preferences.appearance == .dark ? .dark : nil))
+        .onReceive(NotificationCenter.default.publisher(for: .ccPrefsSelectTab)) { note in
+            if let tab = note.object as? PrefsTab { selected = tab }
+        }
     }
 }
 

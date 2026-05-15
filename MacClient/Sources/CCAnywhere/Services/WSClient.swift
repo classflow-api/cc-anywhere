@@ -41,6 +41,9 @@ public final class WSClient: NSObject, ObservableObject {
     private var reconnectAttempt = 0
     private let backoffSeconds: [Int] = [1, 3, 10, 30]
     private var manualDisconnect = false
+    /// 主动 cancel(.goingAway/.normalClosure) 时置 true,didCloseWith 看到后直接忽略,
+    /// 避免触发 handleDisconnect 又安排一轮 reconnect,与 connect() 已经发起的新连接形成风暴。
+    private var intentionalCancel = false
     private var heartbeatTimer: Timer?
 
     public override init() { super.init() }
@@ -56,8 +59,11 @@ public final class WSClient: NSObject, ObservableObject {
             return
         }
         // Tear down any previous task
-        task?.cancel(with: .goingAway, reason: nil)
-        task = nil
+        if task != nil {
+            intentionalCancel = true
+            task?.cancel(with: .goingAway, reason: nil)
+            task = nil
+        }
 
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 10
@@ -79,8 +85,11 @@ public final class WSClient: NSObject, ObservableObject {
     public func disconnect() {
         manualDisconnect = true
         stopHeartbeat()
-        task?.cancel(with: .normalClosure, reason: nil)
-        task = nil
+        if task != nil {
+            intentionalCancel = true
+            task?.cancel(with: .normalClosure, reason: nil)
+            task = nil
+        }
         state = .disconnected(reason: "已停止")
     }
 
@@ -111,18 +120,58 @@ public final class WSClient: NSObject, ObservableObject {
         await send(ProtocolMessage(type: type, data: payload))
     }
 
-    // MARK: - Heartbeat (15s, per §3.4 4.1)
+    // MARK: - Heartbeat (5s) + RTT 测量
+
+    /// 最近 N 次 ping/pong 的往返时间（毫秒）。供 ActivityPanel sparkline 使用。
+    @Published public private(set) var latencyHistoryMs: [Int] = []
+
+    private var lastPingSentAt: Date?
+    private let latencyHistoryCap = 30
+    /// 连续多少次 ping 没收到 pong → 视为连接已死,主动 reconnect。
+    /// 5s * 3 = 15s 内没回 pong,即触发重连。
+    private let pongMissedThreshold = 3
+    private var pongMissedCount = 0
 
     private func startHeartbeat() {
         stopHeartbeat()
+        pongMissedCount = 0
         heartbeatTimer = Timer.scheduledTimer(
-            withTimeInterval: 15, repeats: true
+            withTimeInterval: 5, repeats: true
         ) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self else { return }
+                // 上一轮 ping 还没收到 pong → 计数 +1
+                if self.lastPingSentAt != nil {
+                    self.pongMissedCount += 1
+                    if self.pongMissedCount >= self.pongMissedThreshold {
+                        self.log.warn("pong missed \(self.pongMissedCount) consecutive — forcing reconnect")
+                        self.lastPingSentAt = nil
+                        self.pongMissedCount = 0
+                        // socket 可能 ESTABLISHED 但 server 端已断,本地 didClose/receive 没触发。
+                        // 主动走 handleDisconnect 流程触发 backoff reconnect。
+                        self.handleDisconnect(reason: "心跳超时")
+                        return
+                    }
+                }
+                self.lastPingSentAt = Date()
                 await self.send(ProtocolMessage(type: "ping"))
             }
         }
+    }
+
+    /// 收到 pong 时调用：用 lastPingSentAt 估算 RTT，append 到 history。
+    /// 简化版：不按 id 关联（5s 心跳间隔远大于 RTT，单 ping pending OK）。
+    fileprivate func handlePong() {
+        guard let sentAt = lastPingSentAt else { return }
+        pongMissedCount = 0
+        let rtt = max(1, Int(Date().timeIntervalSince(sentAt) * 1000))
+        var hist = latencyHistoryMs
+        hist.append(rtt)
+        if hist.count > latencyHistoryCap {
+            hist.removeFirst(hist.count - latencyHistoryCap)
+        }
+        latencyHistoryMs = hist
+        lastPingSentAt = nil
     }
     private func stopHeartbeat() {
         heartbeatTimer?.invalidate(); heartbeatTimer = nil
@@ -142,9 +191,15 @@ public final class WSClient: NSObject, ObservableObject {
 
     private func startReceive() {
         guard let t = task else { return }
-        t.receive { [weak self] result in
-            Task { @MainActor [weak self] in
+        t.receive { [weak self, weak t] result in
+            Task { @MainActor [weak self, weak t] in
                 guard let self = self else { return }
+                // 旧 task 的回调:已经被 connect()/disconnect() 主动 cancel,
+                // 此刻 self.task 已指向新 task(或为 nil),忽略以避免 reconnect 风暴。
+                guard let t = t, t === self.task else {
+                    self.log.debug("receive callback ignored (stale task)")
+                    return
+                }
                 switch result {
                 case .success(let message):
                     self.handleIncoming(message)
@@ -182,7 +237,7 @@ public final class WSClient: NSObject, ObservableObject {
                 state = .disconnected(reason: err?.message ?? "鉴权失败")
             }
         case "pong":
-            break
+            handlePong()
         case "presence.phone_count":
             if let data = msg.data {
                 let p = decode(data, PhoneCountPayload.self)
@@ -203,6 +258,12 @@ public final class WSClient: NSObject, ObservableObject {
         stopHeartbeat()
         if manualDisconnect {
             state = .disconnected(reason: reason)
+            return
+        }
+        // 防重入：URLSession receive error + WebSocketDelegate.didCloseWith
+        // 经常成对触发同一次断开，必须去重避免 reconnect 风暴。
+        if case .reconnecting = state {
+            log.debug("disconnect ignored (already reconnecting): \(reason ?? "?")")
             return
         }
         let attempt = reconnectAttempt + 1
@@ -245,6 +306,11 @@ extension WSClient: URLSessionDelegate, URLSessionWebSocketDelegate {
                                        didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
         Task { @MainActor in
             self.log.info("ws closed code=\(closeCode.rawValue)")
+            if self.intentionalCancel {
+                self.intentionalCancel = false
+                self.log.debug("ws close ignored (intentional cancel)")
+                return
+            }
             self.handleDisconnect(reason: "已关闭(\(closeCode.rawValue))")
         }
     }

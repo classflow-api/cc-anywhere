@@ -26,8 +26,18 @@ abstract class AppRoutes {
 }
 
 final appRouterProvider = Provider<GoRouter>((ref) {
+  // initialConfigProvider 异步 resolve 时,router 必须重新评估 redirect,
+  // 否则首次启动会停在 onboarding(cfg=null),即使后续 provider 加载到 cfg
+  // redirect 也不会重跑。用 ValueNotifier + ref.listen 触发 router 刷新。
+  final refresh = ValueNotifier<int>(0);
+  ref.listen<AsyncValue<ServerConfig?>>(initialConfigProvider, (_, __) {
+    refresh.value++;
+  });
+  ref.onDispose(refresh.dispose);
+
   return GoRouter(
     initialLocation: AppRoutes.onboarding,
+    refreshListenable: refresh,
     redirect: (context, state) {
       // 首次进入时根据 initialConfig 跳转
       final cfg = ref.read(initialConfigProvider).asData?.value;

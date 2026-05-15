@@ -19,7 +19,7 @@ class _ManualInputScreenState extends ConsumerState<ManualInputScreen> {
   final _server = TextEditingController();
   final _port = TextEditingController(text: '8443');
   final _token = TextEditingController();
-  bool _trust = false;
+  bool _trust = true;
 
   @override
   void dispose() {

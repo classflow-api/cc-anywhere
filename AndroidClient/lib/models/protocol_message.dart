@@ -67,6 +67,11 @@ abstract class ProtocolType {
   static const imageUploadBegin = 'image.upload.begin';
   static const imageUploadUrl = 'image.upload.url';
   static const imageUploadExpired = 'image.upload.expired';
+  static const imageDownloadRequest = 'image.download.url';
+  static const imageDownloadResponse = 'image.download.url.response';
+  // (no-op placeholder so #36 deps are independent of protocol changes)
+  static const slashListRequest = 'slash.list.request';
+  static const slashListResponse = 'slash.list.response';
   static const toolUseApprove = 'tool_use.approve';
 
   // presence

@@ -50,7 +50,9 @@ class ImageUploadService {
   ///
   /// 注意：[text] 不在这里发；ChatRepository 负责在所有图片上传完成后单独发 `input.text`。
   /// 这样语义更清晰且与「场景 2 步骤 10」一致：先发图，再发文字。
-  Future<void> upload({
+  /// 返回 server 端的 upload_id,用于 chat_repository 记录 filename→upload_id 映射,
+  /// 后续 phone 端从 JSONL 解析到 `@<path>` 文本时,可凭 upload_id 向 server 申请预览 URL。
+  Future<String> upload({
     required String tabId,
     required File file,
     void Function(double progress)? onProgress,
@@ -74,7 +76,7 @@ class ImageUploadService {
     Object? lastError;
     for (var attempt = 1; attempt <= _maxAttempts; attempt++) {
       try {
-        await _attemptOnce(
+        final uploadId = await _attemptOnce(
           tabId: tabId,
           filename: filename,
           size: size,
@@ -82,7 +84,7 @@ class ImageUploadService {
           file: file,
           onProgress: onProgress,
         );
-        return; // 成功
+        return uploadId; // 成功
       } on ImageUploadException catch (e) {
         // 服务端业务错误：不重试
         if (e.code == ProtocolErrorCode.imageTooLarge ||
@@ -112,7 +114,7 @@ class ImageUploadService {
     );
   }
 
-  Future<void> _attemptOnce({
+  Future<String> _attemptOnce({
     required String tabId,
     required String filename,
     required int size,
@@ -166,10 +168,11 @@ class ImageUploadService {
     }
 
     final uploadUrl = resp.data['upload_url'] as String?;
-    if (uploadUrl == null || uploadUrl.isEmpty) {
+    final uploadId = resp.data['upload_id'] as String?;
+    if (uploadUrl == null || uploadUrl.isEmpty || uploadId == null || uploadId.isEmpty) {
       throw const ImageUploadException(
         ProtocolErrorCode.internal,
-        'Server 响应缺少 upload_url',
+        'Server 响应缺少 upload_url/upload_id',
       );
     }
 
@@ -179,6 +182,7 @@ class ImageUploadService {
       file: file,
       onProgress: onProgress,
     );
+    return uploadId;
   }
 
   Future<void> _httpPostFile({

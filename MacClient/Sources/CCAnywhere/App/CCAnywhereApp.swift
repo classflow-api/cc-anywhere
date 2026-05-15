@@ -20,30 +20,43 @@ struct CCAnywhereApp: App {
                 .environmentObject(container.wsClient)
                 .environmentObject(container.processHost)
                 .environmentObject(container.deviceManager)
+                .environmentObject(container.fileViewerState)
                 .frame(minWidth: 1200, minHeight: 760)
                 .background(WindowAccessor { window in
-                    window?.title = "cc-anywhere"
-                    window?.titlebarAppearsTransparent = true
-                    window?.toolbarStyle = .unified
+                    guard let w = window else { return }
+                    w.title = "遥指"
+                    // 关键：使用 macOS native titlebar（不透明 + 可见 title），
+                    // SwiftUI 内容真正在 titlebar 下方独立绘制，
+                    // 按钮绝对在 SwiftUI 内容区，hit-test 一定能 work。
+                    w.titleVisibility = .visible
+                    w.titlebarAppearsTransparent = false
+                    w.toolbarStyle = .unified
                 })
                 .preferredColorScheme(effectiveColorScheme(container.preferences))
                 .onAppear {
                     appDelegate.container = container
                 }
         }
+        // .titleBar：使用 macOS 原生 titlebar（28pt 高，含 traffic lights + 标题文字）。
+        // SwiftUI 内容（ChromeBar 等）严格在 titlebar 下方独立绘制。
+        // 按钮位置完全脱离 titlebar movable-region，hit-test 一定能 work。
+        // 视觉代价：顶部有两条 bar（系统 titlebar + 我们的 ChromeBar），
+        // 但比"按钮点不开"重要得多。
         .windowStyle(.titleBar)
         .windowResizability(.contentSize)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("新建 Tab…") {
+                Button("新建工作区…") {
                     NotificationCenter.default.post(name: .ccNewTabRequest, object: nil)
                 }
                 .keyboardShortcut("n", modifiers: [.command])
             }
-        }
-
-        Settings {
-            Text("使用 cc-anywhere → 偏好设置… 打开设置")
+            CommandGroup(replacing: .appSettings) {
+                Button("偏好设置…") {
+                    AppDelegate.shared?.openPreferences(nil)
+                }
+                .keyboardShortcut(",", modifiers: [.command])
+            }
         }
     }
 

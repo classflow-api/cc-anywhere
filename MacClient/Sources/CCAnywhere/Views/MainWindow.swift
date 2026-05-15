@@ -10,6 +10,7 @@ struct MainWindowView: View {
     @EnvironmentObject var tabManager: TabManager
     @EnvironmentObject var ws: WSClient
     @EnvironmentObject var themeManager: ThemeManager
+    @EnvironmentObject var fileViewerState: FileViewerState
 
     var body: some View {
         let palette = themeManager.palette
@@ -24,8 +25,6 @@ struct MainWindowView: View {
 
             VStack(spacing: 0) {
                 ChromeBar()
-                TabStripView()
-                Divider().opacity(0.0001)
                 if tabManager.tabs.isEmpty {
                     EmptyStateView()
                 } else {
@@ -33,13 +32,28 @@ struct MainWindowView: View {
                         SidebarView()
                         if let sel = tabManager.selectedTabId,
                            let tab = tabManager.tab(by: sel) {
+                            // 文件树（按 tab.id 强制重建，切 tab 时 root 跟随）
+                            FileExplorerView(rootURL: tab.folder)
+                                .id(tab.id)
                             TabContentView(tab: tab)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            // 文件阅读器：点击文件树文件时打开，宽度可拖
+                            if let openFile = fileViewerState.openFile {
+                                ResizableDivider(
+                                    width: $fileViewerState.panelWidth,
+                                    minWidth: 280,
+                                    maxWidth: 1200,
+                                    palette: themeManager.palette
+                                )
+                                FileViewerPanel(url: openFile,
+                                                onClose: { fileViewerState.close() })
+                                    .frame(width: fileViewerState.panelWidth)
+                                    .id(openFile)
+                            }
                         } else {
                             EmptyStateView()
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
-                        ActivityPanelView(ws: ws)
                     }
                 }
             }

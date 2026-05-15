@@ -55,8 +55,12 @@ const (
 	TypeImageUploadURL     = "image.upload.url"
 	TypeInputImage         = "input.image"
 	TypeImageFetched       = "image.fetched"
-	TypeImageUploadExpired = "image.upload.expired"
-	TypeToolUseApprove     = "tool_use.approve"
+	TypeImageUploadExpired   = "image.upload.expired"
+	TypeImageDownloadRequest = "image.download.url"          // phone -> server, by upload_id
+	TypeImageDownloadResp    = "image.download.url.response" // server -> phone, with signed url
+	TypeSlashListRequest     = "slash.list.request"           // phone -> mac via server
+	TypeSlashListResponse    = "slash.list.response"          // mac -> phone via server
+	TypeToolUseApprove       = "tool_use.approve"
 	TypeInputError         = "input.error"
 
 	// 4.6 presence
@@ -305,6 +309,31 @@ type ImageFetched struct {
 
 type ImageUploadExpired struct {
 	UploadID string `json:"upload_id"`
+}
+
+type ImageDownloadRequest struct {
+	UploadID string `json:"upload_id"`
+}
+
+type ImageDownloadResponse struct {
+	UploadID string `json:"upload_id"`
+	ImageURL string `json:"image_url"` // 空表示 server 上图片已不存在(过期/未上传)
+	Filename string `json:"filename"`
+}
+
+type SlashCommand struct {
+	Name        string `json:"name"`        // 不带前导 "/",如 "clear"
+	Description string `json:"description"` // 可选简短描述(若 .md 有 frontmatter description 则填)
+	Source      string `json:"source"`      // "builtin" | "user" | "project" | "plugin:<name>"
+}
+
+type SlashListRequest struct {
+	TabID string `json:"tab_id"`
+}
+
+type SlashListResponse struct {
+	TabID    string         `json:"tab_id"`
+	Commands []SlashCommand `json:"commands"`
 }
 
 type ToolUseApprove struct {

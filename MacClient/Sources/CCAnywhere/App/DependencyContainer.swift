@@ -18,7 +18,9 @@ public final class DependencyContainer: ObservableObject {
     public let deviceManager: DeviceManager
     public let inputInjector: InputInjector
     public let tabSyncBridge: TabSyncBridge
+    public let slashCommandBridge: SlashCommandBridge
     public let historyBridge: HistoryBridge
+    public let fileViewerState: FileViewerState
 
     private var cancellables = Set<AnyCancellable>()
     private let log = AppLogger.shared.tagged("Container")
@@ -34,7 +36,9 @@ public final class DependencyContainer: ObservableObject {
         self.deviceManager = DeviceManager(ws: wsClient, pref: preferences)
         self.inputInjector = InputInjector(processHost: processHost, ws: wsClient)
         self.tabSyncBridge = TabSyncBridge(ws: wsClient, tabManager: tabManager)
+        self.slashCommandBridge = SlashCommandBridge(ws: wsClient, tabManager: tabManager)
         self.historyBridge = HistoryBridge(ws: wsClient, tabManager: tabManager)
+        self.fileViewerState = FileViewerState()
 
         // Reap any stale claude PIDs (R-M2-05) before doing anything else.
         pidTracker.reapStaleProcesses()
@@ -81,6 +85,12 @@ public final class DependencyContainer: ObservableObject {
         for tab in tabManager.tabs {
             processHost.startProcess(for: tab)
             jsonlWatcher.watch(tab: tab)
+        }
+        // 自动选中第一个 tab（否则 MainWindow 会停在 EmptyStateView，
+        // 即使 tabs.json 里有 tab 也"看起来工作区没打开"）
+        if tabManager.selectedTabId == nil, let first = tabManager.tabs.first {
+            tabManager.selectedTabId = first.id
+            log.info("auto-selected first tab: \(first.name)")
         }
         // Connect to Server if configured.
         let cfg = preferences.serverConfig

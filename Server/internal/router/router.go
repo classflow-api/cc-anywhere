@@ -46,6 +46,7 @@ func (r *Router) RouteFromMac(env *protocol.Envelope) *protocol.Envelope {
 		protocol.TypeMsgHistoryResponse,
 		protocol.TypeTabList,
 		protocol.TypeTabListResponse,
+		protocol.TypeSlashListResponse,
 		protocol.TypeTabChanged,
 		protocol.TypeInputError:
 		r.phone.BroadcastToPhones(env)
@@ -64,7 +65,8 @@ func (r *Router) RouteFromPhone(ctx context.Context, env *protocol.Envelope) *pr
 	case protocol.TypeInputText,
 		protocol.TypeToolUseApprove,
 		protocol.TypeMsgHistoryRequest,
-		protocol.TypeTabListRequest:
+		protocol.TypeTabListRequest,
+		protocol.TypeSlashListRequest:
 		if !r.mac.HasMac() {
 			return errorEnvelope(protocol.CodeMacOffline, "mac is offline")
 		}

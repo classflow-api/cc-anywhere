@@ -11,6 +11,18 @@ import 'ws_client.dart';
 class TabRepository {
   TabRepository(this._ws, this._log) {
     _sub = _ws.inbound.listen(_onInbound);
+    // ws 进入 connected 时自动 fetch 一次 tabs:解决用户进入 tab_list_screen
+    // 时 ws 还在 connecting/reconnecting 导致 send 抛 NotConnectedException 后
+    // 永久 loading 的问题。
+    _stateSub = _ws.stateStream.listen((s) {
+      if (s == WsConnectionState.connected) {
+        requestList();
+      }
+    });
+    // 构造时 ws 可能已是 connected(stream 不重放历史值),立即触发一次。
+    if (_ws.state == WsConnectionState.connected) {
+      Future<void>.microtask(requestList);
+    }
   }
 
   final WsClient _ws;
@@ -20,6 +32,7 @@ class TabRepository {
   final _tabs = <String, TabInfo>{};
   final _controller = StreamController<List<TabInfo>>.broadcast();
   StreamSubscription<ProtocolMessage>? _sub;
+  StreamSubscription<WsConnectionState>? _stateSub;
 
   Stream<List<TabInfo>> get tabsStream => _controller.stream;
   List<TabInfo> get current => _sortedList();
@@ -99,6 +112,7 @@ class TabRepository {
 
   Future<void> dispose() async {
     await _sub?.cancel();
+    await _stateSub?.cancel();
     await _controller.close();
   }
 }

@@ -13,6 +13,7 @@ enum MessageKind {
   toolUse,
   toolResult,
   attachment,
+  askUserQuestion,
   raw,
 }
 
@@ -53,6 +54,10 @@ class Message {
   /// 当 raw 解析失败时，保留原始 JSON 行
   final String? rawLine;
 
+  /// AskUserQuestion 工具调用专用:Anthropic schema 的 questions 数组,
+  /// 每项 { question, header, multiSelect, options: [{ label, description, preview? }] }
+  final List<Map<String, dynamic>>? questions;
+
   const Message({
     required this.uuid,
     required this.role,
@@ -75,6 +80,7 @@ class Message {
     this.isLocalPending = false,
     this.sendFailed = false,
     this.rawLine,
+    this.questions,
   });
 
   Message copyWith({
@@ -113,17 +119,110 @@ class Message {
 
   /// 从 JSONL 解析单行
   ///
-  /// 支持两种结构：
+  /// 支持的结构：
+  /// 0. Claude Code 真实结构(嵌套):{type:"user"|"assistant", uuid, message:{role, content:[...]}, ...}
   /// 1. {uuid, role, type:"text", text, timestamp}
-  /// 2. {uuid, role, content:[{type, ...}], timestamp} — 取第一个 content 项
+  /// 2. {uuid, role, content:[{type, ...}], timestamp}
+  /// 跳过的顶层类型:attachment / system / summary / file-history-snapshot 等元数据
   /// 解析失败返回 raw kind
   static List<Message> fromRaw(Map<String, dynamic> raw) {
     try {
       final uuid = (raw['uuid'] as String?) ?? (raw['id'] as String?);
       final ts = _parseTs(raw['timestamp'] ?? raw['created_at']);
+
+      // 形式 0:Claude Code 真实 JSONL — 顶层 type 是 user/assistant,内容嵌在 message.content 里。
+      // 顶层非业务类型(attachment / system / summary / file-history-snapshot / bridge-session 等)
+      // 直接跳过,不向用户展示原始 JSON。
+      final topType = raw['type'] as String?;
+      if (topType == 'user' || topType == 'assistant') {
+        // isMeta=true 的 user 消息是 Claude Code 系统注入的内部指令
+        // (例如 "Continue from where you left off."、"/remote-control" 命令等),
+        // 用户没有真的发这些,过滤掉。
+        if (topType == 'user' && raw['isMeta'] == true) {
+          return const [];
+        }
+        final inner = raw['message'];
+        if (inner is Map<String, dynamic>) {
+          final innerRole = _parseRole((inner['role'] as String?) ?? topType);
+          final innerContent = inner['content'];
+          if (innerContent is List && innerContent.isNotEmpty) {
+            final out = <Message>[];
+            for (var i = 0; i < innerContent.length; i++) {
+              final item = innerContent[i];
+              if (item is! Map<String, dynamic>) continue;
+              out.add(_parseSingle(
+                uuid: '${uuid ?? _fallbackUuid(raw)}#$i',
+                role: innerRole,
+                timestamp: ts,
+                item: item,
+              ));
+            }
+            // assistant 仅含 "No response requested." 单条文本时,
+            // 是 Claude 对 isMeta user 的固定占位回复,无业务价值,过滤掉。
+            if (topType == 'assistant' &&
+                out.length == 1 &&
+                out.first.kind == MessageKind.text &&
+                (out.first.text?.trim() == 'No response requested.')) {
+              return const [];
+            }
+            // user 发图通过 `@<cc-anywhere-inbox-path>` 文本注入 Claude TUI,
+            // JSONL 里这条 user message 只是路径文本。把它识别为 attachment 卡片,
+            // 由 ChatRepository 后续通过 image.download.url 协议补 remoteUrl 显示缩略图。
+            if (topType == 'user') {
+              _rewriteInboxRefAsAttachment(out);
+            }
+            if (out.isNotEmpty) return out;
+          }
+          // user/assistant 但 content 是字符串
+          if (innerContent is String && innerContent.isNotEmpty) {
+            // Claude Code 把用户的 slash command(/clear、/help、/compact 等)
+            // 在 JSONL 里序列化为 <command-name>...</command-name> XML 内部 transcript 格式。
+            // 这是 Claude 给自己看的系统层 representation,用户不需要看到 XML,跳过。
+            if (topType == 'user' &&
+                innerContent.trimLeft().startsWith('<command-name>')) {
+              return const [];
+            }
+            final stringMsg = [
+              Message(
+                uuid: uuid ?? _fallbackUuid(raw),
+                role: innerRole,
+                kind: MessageKind.text,
+                timestamp: ts,
+                text: innerContent,
+              ),
+            ];
+            // 同 list 分支:把 inbox path 改写成 attachment 卡片,避免双卡片。
+            if (topType == 'user') {
+              _rewriteInboxRefAsAttachment(stringMsg);
+            }
+            return stringMsg;
+          }
+        }
+        // 没匹配上但顶层声明是 user/assistant — 静默丢弃,避免渲染"无法解析"卡片
+        return const [];
+      }
+      // 顶层是 Claude Code 内部元数据,丢弃 — 不向用户展示原始 JSON。
+      // 注:topType 命中 user/assistant 已在前面 return,这里只剩元数据类型。
+      const metaTypes = {
+        'attachment',
+        'system',
+        'summary',
+        'file-history-snapshot',
+        'bridge-session',
+        'permission-mode',
+        'last-prompt',
+      };
+      if (topType != null && metaTypes.contains(topType)) {
+        return const [];
+      }
+      // 兜底:任何含有 sessionId 但无 message 字段的行,基本是元数据,跳过避免渲染 raw。
+      if (topType != null && raw['message'] == null && raw['sessionId'] != null) {
+        return const [];
+      }
+
       final role = _parseRole(raw['role'] as String?);
 
-      // 形式 1：扁平
+      // 形式 1:扁平 {type, text, ...}
       if (raw['content'] is! List && raw['type'] != null) {
         final m = _parseSingle(
           uuid: uuid ?? _fallbackUuid(raw),
@@ -134,7 +233,7 @@ class Message {
         return [m];
       }
 
-      // 形式 2：content 数组
+      // 形式 2:顶层 content 数组
       final content = raw['content'];
       if (content is List && content.isNotEmpty) {
         final out = <Message>[];
@@ -214,13 +313,35 @@ class Message {
           text: (item['thinking'] as String?) ?? (item['text'] as String?) ?? '',
         );
       case 'tool_use':
+        final toolName = item['name'] as String?;
+        final input = (item['input'] as Map?)?.cast<String, dynamic>();
+        // 特殊化:AskUserQuestion 工具用专用卡片渲染(问题 + 选项交互)
+        if (toolName == 'AskUserQuestion' && input != null) {
+          final rawQs = input['questions'];
+          if (rawQs is List) {
+            final qs = rawQs
+                .whereType<Map>()
+                .map((e) => e.cast<String, dynamic>())
+                .toList();
+            return Message(
+              uuid: uuid,
+              role: role,
+              kind: MessageKind.askUserQuestion,
+              timestamp: timestamp,
+              toolName: toolName,
+              toolUseId: item['id'] as String?,
+              toolStatus: _parseToolStatus(item['status'] as String?),
+              questions: qs,
+            );
+          }
+        }
         return Message(
           uuid: uuid,
           role: role,
           kind: MessageKind.toolUse,
           timestamp: timestamp,
-          toolName: item['name'] as String?,
-          toolInput: (item['input'] as Map?)?.cast<String, dynamic>(),
+          toolName: toolName,
+          toolInput: input,
           toolUseId: item['id'] as String?,
           toolStatus: _parseToolStatus(item['status'] as String?),
         );
@@ -260,6 +381,40 @@ class Message {
           timestamp: timestamp,
           rawLine: item.toString(),
         );
+    }
+  }
+
+  /// 把 user 消息中"路径形式"的 text 卡片改写为 attachment 卡片(就地修改 list 元素)。
+  ///
+  /// 识别规则:整条 text 是 `@<path>` 形式 + path 中含 `cc-anywhere/inbox/`。
+  /// 这种 text 实际是 Mac 端 InputInjector 把附件路径(图片或任意文件)
+  /// 注入 Claude TUI 产生的 user echo,phone 端应渲染为 attachment 卡片。
+  static void _rewriteInboxRefAsAttachment(List<Message> out) {
+    // 任意后缀都接受 — 协议复用 image.* 通道,实际支持任意文件类型;
+    // attachment_card 根据 filename 后缀决定渲染图片缩略图还是文件图标。
+    // path 前半段允许空格(macOS Application Support 含空格),inbox/ 后 filename 不允许空格。
+    final re = RegExp(
+      r'^@(/.*?cc-anywhere/inbox/[^\s/]+)\s*$',
+      caseSensitive: false,
+    );
+    for (var i = 0; i < out.length; i++) {
+      final m = out[i];
+      if (m.kind != MessageKind.text) continue;
+      final t = m.text?.trim() ?? '';
+      final match = re.firstMatch(t);
+      if (match == null) continue;
+      final fullPath = match.group(1)!;
+      final filename = fullPath.split('/').last;
+      out[i] = Message(
+        uuid: m.uuid,
+        role: m.role,
+        kind: MessageKind.attachment,
+        timestamp: m.timestamp,
+        attachmentFilename: filename,
+        // remoteUrl 由 ChatRepository 通过 image.download.url 协议异步补
+        // path 用 Mac 端原始绝对路径(信息保留,但 phone 端不本地用)
+        attachmentLocalPath: fullPath,
+      );
     }
   }
 

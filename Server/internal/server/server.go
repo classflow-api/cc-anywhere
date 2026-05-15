@@ -241,6 +241,12 @@ func (s *Server) bind(ctx context.Context, conn *Connection, r *http.Request) er
 		if s.hub.MacConn() != nil {
 			online, _ := protocol.NewEnvelope(protocol.TypePresenceMacOnline, nil)
 			_ = conn.Send(online)
+			// 新 phone 上线后,主动让 Mac 重新广播 tab.list。
+			// Mac 收到 tab.list.request 会回 tab.list.response,
+			// 由 RouteFromMac 广播给所有 phone(含本次新上线的)。
+			// 避免依赖 phone 端自行 fetch 时序(client-driven pull 在 ws 还没 connected 时会丢请求)。
+			req, _ := protocol.NewEnvelope(protocol.TypeTabListRequest, nil)
+			s.hub.MacConnSend(req)
 		} else {
 			off, _ := protocol.NewEnvelope(protocol.TypePresenceMacOffline, nil)
 			_ = conn.Send(off)
@@ -381,6 +387,22 @@ func (s *Server) dispatchFromPhone(ctx context.Context, conn *Connection, env *p
 		}
 		urlEnv, _ := protocol.NewEnvelope(protocol.TypeImageUploadURL, resp)
 		_ = conn.Send(urlEnv)
+
+	case protocol.TypeImageDownloadRequest:
+		var req protocol.ImageDownloadRequest
+		if err := env.DecodeData(&req); err != nil {
+			conn.sendError(protocol.CodeInternal, "malformed image.download.url")
+			return
+		}
+		url, fname, ok := s.image.RequestDownloadURL(req.UploadID)
+		resp := protocol.ImageDownloadResponse{
+			UploadID: req.UploadID,
+			ImageURL: url, // 空字符串表示已过期/不存在
+			Filename: fname,
+		}
+		_ = ok // 即使 ok=false 也返回带空 URL 的 response,让 phone 端知道
+		respEnv, _ := protocol.NewEnvelope(protocol.TypeImageDownloadResp, resp)
+		_ = conn.Send(respEnv)
 
 	case protocol.TypeDeviceSelfUnbind:
 		row, err := s.device.RevokeByHash(ctx, conn.TokenHash)

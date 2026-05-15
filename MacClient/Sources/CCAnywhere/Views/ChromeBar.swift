@@ -1,8 +1,6 @@
 // ChromeBar.swift
-// Mirrors the title-bar status row in mac-client.jsx's MacChrome:
-//   [traffic lights]   [connection pill]   [history | bell | settings]
-// We rely on the macOS system title bar for traffic lights, so we render
-// only the pill row + trailing buttons below it.
+// 顶部自绘 chrome bar，用 .windowStyle(.hiddenTitleBar) 替代系统标题栏：
+//   [traffic-lights 占位 76]  [Logo + 遥指 + 版本]  ............  [连接 pill] [历史] [设置]
 
 import SwiftUI
 import AppKit
@@ -14,55 +12,51 @@ struct ChromeBar: View {
 
     var body: some View {
         let palette = themeManager.palette
-        HStack(spacing: 12) {
-            Spacer()
-            // Connection pill
-            connectionPill(palette: palette)
-            Spacer()
-            HStack(spacing: 14) {
-                chromeIconButton(systemName: "clock.arrow.circlepath",
-                                 tooltip: "查看日志",
-                                 palette: palette,
-                                 action: openHistory)
-                chromeIconButton(systemName: "bell",
-                                 tooltip: "通知",
-                                 palette: palette,
-                                 action: {})
-                chromeIconButton(systemName: "gearshape",
-                                 tooltip: "偏好设置",
-                                 palette: palette,
-                                 action: openPreferences)
-                    .keyboardShortcut(",", modifiers: .command)
+        HStack(spacing: 10) {
+            // ChromeBar 在 macOS 系统 titlebar 下方独立一行，
+            // traffic lights 不在我们的内容区，logo 紧贴最左
+            HStack(spacing: 10) {
+                LogoMark(size: 24)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("遥指")
+                        .font(AppFont.ui(size: 13, weight: .bold))
+                        .foregroundColor(palette.text)
+                        .tracking(0.5)
+                    Text("v0.1.0 · M3")
+                        .font(AppFont.mono(size: 9.5))
+                        .foregroundColor(palette.textFaint)
+                }
             }
-            .font(.system(size: 14))
-            .padding(.trailing, 14)
+            .padding(.leading, 14)
+
+            Spacer()
+
+            // 右侧：连接 pill + 历史 + 设置（与 sidebar 的 + 按钮同样 pattern：
+            // SwiftUI Button(.plain) + contentShape(Rectangle)。既然 sidebar +
+            // 能点，这里也能点。）
+            connectionPill(palette: palette)
+            chromeIconButton(systemName: "clock.arrow.circlepath",
+                             tooltip: "查看日志",
+                             palette: palette,
+                             action: openHistory)
+            chromeIconButton(systemName: "gearshape",
+                             tooltip: "偏好设置",
+                             palette: palette,
+                             action: openPreferences)
+                .keyboardShortcut(",", modifiers: .command)
         }
-        // Push the whole row below the macOS title bar so transparent-titlebar
-        // hit-test doesn't swallow our buttons (title bar grabs drag/click).
-        .padding(.top, 24)
-        .frame(height: 60)
+        .padding(.trailing, 14)
+        .frame(height: 44)
+        // ChromeBar 完全在系统 titlebar 下方，普通 Color background 即可
         .background(palette.bgElev)
-        .overlay(
-            Rectangle().fill(palette.line).frame(height: 1),
-            alignment: .bottom
-        )
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(palette.line)
+                .frame(height: 1)
+                .allowsHitTesting(false)
+        }
     }
 
-    /// Icon button with an enlarged, opaque hit area so SwiftUI's .plain style
-    /// doesn't restrict clicks to image pixels.
-    private func chromeIconButton(systemName: String,
-                                  tooltip: String,
-                                  palette: ColorPalette,
-                                  action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .foregroundColor(palette.textMuted)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(tooltip)
-    }
+    // MARK: - Components
 
     private func connectionPill(palette: ColorPalette) -> some View {
         let (dot, label, host) = pillData(palette: palette)
@@ -91,6 +85,27 @@ struct ChromeBar: View {
         )
     }
 
+    private func chromeIconButton(systemName: String,
+                                  tooltip: String,
+                                  palette: ColorPalette,
+                                  action: @escaping () -> Void) -> some View {
+        Button(action: {
+            // 诊断：用 AppLogger 写日志到 ~/Library/Logs/cc-anywhere/cc-anywhere.log
+            // 这样能 100% 确认按钮 click 是否触发 action。
+            AppLogger.shared.tagged("ChromeBar")
+                .info("icon button clicked: \(systemName)")
+            action()
+        }) {
+            Image(systemName: systemName)
+                .font(.system(size: 14))
+                .frame(width: 28, height: 28)
+                .foregroundColor(palette.textMuted)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(tooltip)
+    }
+
     private var isPulsing: Bool {
         if case .connected = ws.state { return true }
         return false
@@ -107,15 +122,16 @@ struct ChromeBar: View {
         }
     }
 
+    // MARK: - Actions
+
     private func openPreferences() {
-        if let delegate = NSApp.delegate as? AppDelegate {
-            delegate.openPreferences(nil)
-        }
+        // 通过 AppDelegate.shared 直接访问，绕开 SwiftUI 包装层
+        // （NSApp.delegate 在 @NSApplicationDelegateAdaptor 下是 SwiftUI.AppDelegate，
+        // 不能 cast 到我们的 AppDelegate）
+        AppDelegate.shared?.openPreferences(nil)
     }
 
     private func openHistory() {
-        if let delegate = NSApp.delegate as? AppDelegate {
-            delegate.openLogViewer(nil)
-        }
+        AppDelegate.shared?.openLogViewer(nil)
     }
 }

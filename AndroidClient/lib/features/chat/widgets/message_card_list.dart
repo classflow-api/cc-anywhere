@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../data/chat_repository.dart';
 import '../../../models/message.dart';
 import '../../../theme/color_tokens.dart';
+import 'ask_user_question_card.dart';
 import 'assistant_text_card.dart';
 import 'attachment_card.dart';
 import 'raw_card.dart';
@@ -108,14 +109,19 @@ class _MessageCardListState extends ConsumerState<MessageCardList> {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final items = widget.state.messages;
-    final renderItems = _withSeparators(items);
+    // 仅生成元数据(message + 可选 separator 时间标记),不预实例化 Widget。
+    // ListView.builder 的 itemBuilder 才真正按需 lazy 创建,避免 N 条消息时
+    // 整列表都被实例化导致滑动卡顿。
+    final renderMeta = _computeRenderMeta(items);
 
     return Stack(
       children: [
         ListView.builder(
           controller: _scrollCtrl,
           padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-          itemCount: renderItems.length +
+          // cacheExtent 提高一点能减少滑动到边界时的 build 抖动,但太大反而增加内存。
+          cacheExtent: 600,
+          itemCount: renderMeta.length +
               (widget.state.loadingMore ? 1 : 0) +
               (widget.assistantTyping ? 1 : 0),
           itemBuilder: (_, i) {
@@ -134,8 +140,12 @@ class _MessageCardListState extends ConsumerState<MessageCardList> {
             }
             final offset = widget.state.loadingMore ? 1 : 0;
             final idx = i - offset;
-            if (idx < renderItems.length) {
-              return renderItems[idx];
+            if (idx < renderMeta.length) {
+              final meta = renderMeta[idx];
+              if (meta.separatorTime != null) {
+                return TimeSeparator(time: meta.separatorTime!);
+              }
+              return _buildCard(meta.message!);
             }
             // assistant typing
             return _AssistantTyping();
@@ -188,14 +198,17 @@ class _MessageCardListState extends ConsumerState<MessageCardList> {
     );
   }
 
-  List<Widget> _withSeparators(List<Message> items) {
-    final out = <Widget>[];
+  /// 计算渲染项元数据(message 或 separator 标记),不实例化 Widget。
+  /// 真正的 Widget 由 ListView.builder 的 itemBuilder lazy 创建。
+  List<({Message? message, DateTime? separatorTime})> _computeRenderMeta(
+      List<Message> items) {
+    final out = <({Message? message, DateTime? separatorTime})>[];
     DateTime? prev;
     for (final m in items) {
       if (prev == null || m.timestamp.difference(prev).inMinutes >= 60) {
-        out.add(TimeSeparator(time: m.timestamp));
+        out.add((message: null, separatorTime: m.timestamp));
       }
-      out.add(_buildCard(m));
+      out.add((message: m, separatorTime: null));
       prev = m.timestamp;
     }
     return out;
@@ -225,6 +238,12 @@ class _MessageCardListState extends ConsumerState<MessageCardList> {
         return ToolResultCard(key: ValueKey(m.uuid), message: m);
       case MessageKind.attachment:
         return AttachmentCard(key: ValueKey(m.uuid), message: m);
+      case MessageKind.askUserQuestion:
+        return AskUserQuestionCard(
+          key: ValueKey(m.uuid),
+          message: m,
+          tabId: widget.tabId,
+        );
       case MessageKind.raw:
         return RawCard(key: ValueKey(m.uuid), message: m);
     }

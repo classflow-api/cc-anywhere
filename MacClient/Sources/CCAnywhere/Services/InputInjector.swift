@@ -54,9 +54,15 @@ public final class InputInjector {
         guard let tabId = UUID(uuidString: p.tabId),
               let url = URL(string: p.imageUrl) else { return }
         log.info("image to tab=\(p.tabId) url=\(p.imageUrl)")
+        // 用 upload_id + 原扩展名 作为本地落盘文件名,避免用户连发同名图(iOS 截图常见
+        // 默认 Screenshot.png / IMG_xxxx.jpg)时覆盖前一张 — 这是端到端 dedup 的关键统一 key:
+        // phone 端 message.dart 解析 `@<inbox-path>` 提到的 filename = upload_id+ext,
+        // phone 端本地 echo 上传成功后也把 attachment.filename 改成同形式,匹配 100% 命中。
+        let ext = (p.filename as NSString).pathExtension
+        let safeFilename = ext.isEmpty ? p.uploadId : "\(p.uploadId).\(ext)"
         let local = await ImageDownloader.shared.download(
             url: url,
-            filename: p.filename,
+            filename: safeFilename,
             expectedSha256: p.sha256
         )
         guard let localURL = local else {
@@ -66,8 +72,15 @@ public final class InputInjector {
         // Notify Server it can delete inbox file. Server keys on upload_id.
         await ws?.send(ProtocolMessage(type: "image.fetched",
                                        data: try? AnyJSON(encoding: ["upload_id": p.uploadId])))
-        let injection = "@\(localURL.path)\r"
-        processHost?.write(to: tabId, string: injection)
+        // Claude Code 的 file mention 流程:
+        //   1) 输入 `@<path>\r` → 路径被转成 file pill,光标停在输入框等待
+        //   2) 再按一次 `\r`  → 真正发送消息(file pill 作为附件)
+        // 单次 `@<path>\r` 只完成第一步,消息不会送给 Claude。
+        // 注入两次回车,中间留 200ms 让 TUI 完成 file pill 解析。
+        processHost?.write(to: tabId, string: "@\(localURL.path)\r")
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        processHost?.write(to: tabId, string: "\r")
+        log.info("injected image @\(localURL.lastPathComponent) + send to tab=\(p.tabId)")
     }
 
     private func handleApprove(_ msg: ProtocolMessage) {

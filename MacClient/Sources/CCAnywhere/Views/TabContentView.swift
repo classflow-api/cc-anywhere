@@ -18,17 +18,33 @@ struct SwiftTermHost: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let container = NSView(frame: .zero)
         container.wantsLayer = true
+        container.autoresizingMask = [.width, .height]
         attach(in: container)
         return container
     }
 
     func updateNSView(_ container: NSView, context: Context) {
-        attach(in: container)
+        // 关键：只在 term 实例真换了的时候 reattach，否则只更新主题。
+        // 之前每次 updateNSView 都 removeFromSuperview + re-add subview，
+        // 破坏 SwiftTerm 内部 layout 状态 + PTY 没收到新 winsize，
+        // 导致改窗口宽度（拖 ResizableDivider / 打开 FileViewer）后
+        // 文字串位置、行不重排。
+        let current = container.subviews.first as? LocalProcessTerminalView
+        let expected = processHost.terminalsByTab[tabId]
+        if current !== expected {
+            attach(in: container)
+        }
         applyTheme(container)
+        // 显式触发 layout 让 SwiftTerm 根据新 bounds 重算 cols×rows + 发 SIGWINCH。
+        if let term = expected {
+            DispatchQueue.main.async {
+                term.needsLayout = true
+                term.layoutSubtreeIfNeeded()
+            }
+        }
     }
 
     private func attach(in container: NSView) {
-        // Wipe any previous subviews.
         for sub in container.subviews { sub.removeFromSuperview() }
         if let term = processHost.terminalsByTab[tabId] {
             term.translatesAutoresizingMaskIntoConstraints = false
@@ -40,9 +56,6 @@ struct SwiftTermHost: NSViewRepresentable {
                 term.bottomAnchor.constraint(equalTo: container.bottomAnchor)
             ])
             applyTheme(container)
-            // Defer so the view is in a window — only then can it accept first
-            // responder for keyboard input. Without this the user types into the
-            // terminal and nothing happens.
             DispatchQueue.main.async { [weak term] in
                 guard let term = term, let window = term.window else { return }
                 window.makeFirstResponder(term)
@@ -107,6 +120,12 @@ struct TabContentView: View {
                             .foregroundColor(palette.textMuted)
                     }
                 }
+                .contentShape(Capsule())
+                .onTapGesture {
+                    AppDelegate.shared?.initialPrefsTab = .themes
+                    AppDelegate.shared?.openPreferences(nil)
+                }
+                .help("点击切换终端主题")
             }
             .padding(.horizontal, 4)
 
@@ -123,9 +142,6 @@ struct TabContentView: View {
                     RoundedRectangle(cornerRadius: 12)
                         .stroke(palette.line, lineWidth: 1)
                 )
-
-            // Command crumb (mock prompt line per design's design)
-            commandBar(palette: palette)
         }
         .padding(14)
         .background(palette.bg)
@@ -211,38 +227,8 @@ struct TabContentView: View {
         )
     }
 
-    /// Open the standard preferences window so users can set the claude path.
-    /// Dispatches via the responder chain to `AppDelegate.openPreferences(_:)`.
     private func openPreferences() {
-        NSApp.sendAction(#selector(AppDelegate.openPreferences(_:)), to: nil, from: nil)
-    }
-
-    private func commandBar(palette: ColorPalette) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "terminal")
-                .foregroundColor(palette.accent)
-            HStack(spacing: 4) {
-                Text("❯").foregroundColor(palette.accent).font(AppFont.mono(size: 12))
-                Text("点击终端窗口直接输入指令")
-                    .font(AppFont.mono(size: 12))
-                    .foregroundColor(palette.textMuted)
-            }
-            Spacer()
-            Text("⌘K")
-                .font(AppFont.ui(size: 11)).foregroundColor(palette.textFaint)
-            Text("⌘↵")
-                .font(AppFont.ui(size: 11)).foregroundColor(palette.textFaint)
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 44)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(palette.bgElev)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(palette.line, lineWidth: 1)
-                )
-        )
+        AppDelegate.shared?.openPreferences(nil)
     }
 
     private func restart() {

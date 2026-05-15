@@ -110,8 +110,7 @@ struct ActivityPanelView: View {
             }
             .frame(maxHeight: .infinity)
 
-            // Server health card with mock sparkline
-            serverHealthCard(palette: palette)
+            // Server 健康卡已移到左侧 sidebar
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 14)
@@ -127,18 +126,25 @@ struct ActivityPanelView: View {
     }
 
     private func serverHealthCard(palette: ColorPalette) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let history = ws.latencyHistoryMs
+        let latest = history.last
+        let isConnected: Bool = {
+            if case .connected = ws.state { return true } else { return false }
+        }()
+        let dotColor: Color = isConnected ? palette.success
+            : (history.isEmpty ? palette.textFaint : palette.warn)
+        return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
-                PulseDot(color: palette.success, size: 6)
+                PulseDot(color: dotColor, size: 6, pulse: isConnected)
                 Text("Server 健康")
                     .font(AppFont.ui(size: 11, weight: .semibold))
                     .foregroundColor(palette.text)
                 Spacer()
-                Text("38ms")
+                Text(latest.map { "\($0)ms" } ?? "—")
                     .font(AppFont.mono(size: 10))
                     .foregroundColor(palette.textFaint)
             }
-            Sparkline(palette: palette)
+            Sparkline(palette: palette, pointsMs: history)
                 .frame(height: 28)
         }
         .padding(10)
@@ -200,27 +206,41 @@ private struct EventRow: View {
     }
 }
 
-/// Tiny faux sparkline (Server latency placeholder).
-private struct Sparkline: View {
+/// 真实心跳延迟 sparkline。从 WSClient.latencyHistoryMs 拉数据。
+struct Sparkline: View {
     let palette: ColorPalette
-    private let points: [Double] = [22, 14, 18, 8, 12, 4, 10, 7, 12, 5, 9]
+    let pointsMs: [Int]
+    var minPoints: Int = 6  // 不足时填底，避免空 path 报错
 
     var body: some View {
         GeometryReader { geo in
-            let step = geo.size.width / CGFloat(points.count - 1)
+            // 兜底空数据
+            let raw = pointsMs.isEmpty ? Array(repeating: 0, count: minPoints) : pointsMs
+            let values = raw.map { Double($0) }
+            // 归一化：min..max 映射到 canvas（保留 6pt 上下边距）
+            let lo = values.min() ?? 0
+            let hi = max(values.max() ?? 1, lo + 1)
+            let topPad: CGFloat = 4
+            let botPad: CGFloat = 4
+            let h = max(geo.size.height - topPad - botPad, 1)
+            let n = values.count
+            let step = n > 1 ? geo.size.width / CGFloat(n - 1) : 0
+
             let path = Path { p in
-                for (i, v) in points.enumerated() {
+                for (i, v) in values.enumerated() {
                     let x = step * CGFloat(i)
-                    let y = CGFloat(v)
+                    let norm = (v - lo) / (hi - lo)
+                    let y = topPad + (1 - CGFloat(norm)) * h
                     if i == 0 { p.move(to: CGPoint(x: x, y: y)) }
                     else { p.addLine(to: CGPoint(x: x, y: y)) }
                 }
             }
             let fill = Path { p in
                 p.move(to: CGPoint(x: 0, y: geo.size.height))
-                for (i, v) in points.enumerated() {
+                for (i, v) in values.enumerated() {
                     let x = step * CGFloat(i)
-                    let y = CGFloat(v)
+                    let norm = (v - lo) / (hi - lo)
+                    let y = topPad + (1 - CGFloat(norm)) * h
                     p.addLine(to: CGPoint(x: x, y: y))
                 }
                 p.addLine(to: CGPoint(x: geo.size.width, y: geo.size.height))

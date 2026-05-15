@@ -7,6 +7,14 @@ struct GeneralPane: View {
     @EnvironmentObject var preferences: PreferencesService
     @EnvironmentObject var themeManager: ThemeManager
 
+    private static let intFormatter: NumberFormatter = {
+        let f = NumberFormatter()
+        f.numberStyle = .decimal
+        f.minimum = 0
+        f.maximum = 1_000_000_000
+        return f
+    }()
+
     var body: some View {
         let palette = themeManager.palette
         ScrollView {
@@ -20,7 +28,7 @@ struct GeneralPane: View {
                 }
 
                 GlassCard(palette: palette) {
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 12) {
                         Text("外观")
                             .font(AppFont.ui(size: 13, weight: .semibold))
                             .foregroundColor(palette.text)
@@ -30,9 +38,9 @@ struct GeneralPane: View {
                             }
                         }
                         .pickerStyle(.segmented)
-                        Toggle("跟随系统外观自动切换", isOn: $preferences.followSystemAppearance)
-                            .toggleStyle(.switch)
-                            .foregroundColor(palette.text)
+                        Text("选「跟随系统」时 App 会随 macOS 外观自动切换；选「浅色」或「深色」则强制锁定。")
+                            .font(AppFont.ui(size: 11))
+                            .foregroundColor(palette.textMuted)
                     }
                 }
 

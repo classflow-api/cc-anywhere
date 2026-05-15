@@ -15,7 +15,7 @@ class ServerConfig {
     required this.subToken,
     required this.agentId,
     required this.deviceName,
-    this.trustSelfSigned = false,
+    this.trustSelfSigned = true,
   });
 
   ServerConfig copyWith({
@@ -50,7 +50,7 @@ class ServerConfig {
         subToken: j['sub_token'] as String,
         agentId: (j['agent_id'] as String?) ?? '',
         deviceName: (j['device_name'] as String?) ?? 'Android',
-        trustSelfSigned: (j['trust_self_signed'] as bool?) ?? false,
+        trustSelfSigned: (j['trust_self_signed'] as bool?) ?? true,
       );
 
   /// 解析 QR payload，预期形如：

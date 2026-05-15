@@ -10,13 +10,19 @@ let package = Package(
         .executable(name: "CCAnywhere", targets: ["CCAnywhere"])
     ],
     dependencies: [
-        .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.2.0")
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm", from: "1.2.0"),
+        // Markdown 渲染（GFM + 代码块 + 表格 + 链接 + 图片）
+        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
+        // 代码语法高亮（highlight.js 内核，192 种语言）
+        .package(url: "https://github.com/raspu/Highlightr", from: "2.2.0")
     ],
     targets: [
         .executableTarget(
             name: "CCAnywhere",
             dependencies: [
-                .product(name: "SwiftTerm", package: "SwiftTerm")
+                .product(name: "SwiftTerm", package: "SwiftTerm"),
+                .product(name: "MarkdownUI", package: "swift-markdown-ui"),
+                .product(name: "Highlightr", package: "Highlightr")
             ],
             path: "Sources/CCAnywhere",
             exclude: ["Resources/Info.plist"],

@@ -1,11 +1,13 @@
 // SidebarView.swift
-// Mirrors MacSidebar in mac-client.jsx: app logo + Workspaces list + Mobile
-// list + session stats card.
+// 工作区列表（每行 = 一个 Tab）+ 手机端列表 + 本次会话统计。
+// Logo + 软件名已移到顶部 ChromeBar；本视图聚焦"工作区 / 手机端 / 统计"。
 
 import SwiftUI
+import AppKit
 
 struct SidebarView: View {
     @EnvironmentObject var tabManager: TabManager
+    @EnvironmentObject var processHost: ProcessHost
     @EnvironmentObject var themeManager: ThemeManager
     @EnvironmentObject var deviceManager: DeviceManager
     @EnvironmentObject var ws: WSClient
@@ -13,59 +15,55 @@ struct SidebarView: View {
     var body: some View {
         let palette = themeManager.palette
         VStack(alignment: .leading, spacing: 14) {
-            // Logo + meta
-            HStack(spacing: 8) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(LinearGradient(colors: [palette.accent, Color(hex: 0x9A7BF2)],
-                                             startPoint: .topLeading,
-                                             endPoint: .bottomTrailing))
-                        .frame(width: 26, height: 26)
-                        .shadow(color: palette.accent.opacity(0.4), radius: 6, y: 3)
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(.white)
-                        .frame(width: 10, height: 10)
-                        .opacity(0.95)
-                }
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("cc-anywhere")
-                        .font(AppFont.ui(size: 12, weight: .bold))
-                        .foregroundColor(palette.text)
-                    Text("v0.1.0 · M3")
-                        .font(AppFont.mono(size: 10))
-                        .foregroundColor(palette.textFaint)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 4)
-
-            // Workspaces
+            // 工作区 section header（含 + 按钮）
             VStack(alignment: .leading, spacing: 4) {
-                SectionLabel("Workspaces", palette: palette)
-                    .padding(.horizontal, 6)
-                    .padding(.bottom, 4)
+                HStack(spacing: 6) {
+                    SectionLabel("工作区", palette: palette)
+                    Spacer()
+                    Button(action: createTab) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(width: 20, height: 20)
+                            .foregroundColor(palette.textMuted)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("新建工作区（选择项目文件夹）")
+                    .keyboardShortcut("n", modifiers: .command)
+                }
+                .padding(.horizontal, 6)
+                .padding(.bottom, 4)
+
                 ForEach(tabManager.tabs) { tab in
                     WorkspaceRow(
                         tab: tab,
                         palette: palette,
                         isActive: tab.id == tabManager.selectedTabId
                     )
+                    .contentShape(Rectangle())
                     .onTapGesture {
                         tabManager.selectedTabId = tab.id
                         tabManager.clearUnread(tab.id)
                     }
+                    .contextMenu {
+                        Button("在 Finder 中显示") {
+                            NSWorkspace.shared.activateFileViewerSelecting([tab.folder])
+                        }
+                        Divider()
+                        Button("关闭工作区", role: .destructive) { confirmAndClose(tab) }
+                    }
                 }
                 if tabManager.tabs.isEmpty {
-                    Text("使用上方 + 创建第一个 Tab")
+                    Text("点击右上方 + 创建工作区")
                         .font(AppFont.ui(size: 11))
                         .foregroundColor(palette.textFaint)
                         .padding(.horizontal, 8)
                 }
             }
 
-            // Mobile devices
+            // 手机端 section
             VStack(alignment: .leading, spacing: 4) {
-                SectionLabel("Mobile · \(ws.phoneCount) 在线", palette: palette)
+                SectionLabel("手机端 · \(ws.phoneCount) 在线", palette: palette)
                     .padding(.horizontal, 6)
                     .padding(.bottom, 4)
                 if deviceManager.devices.isEmpty {
@@ -95,12 +93,12 @@ struct SidebarView: View {
 
             Spacer()
 
-            // Session stats placeholder card
+            serverHealthCard(palette: palette)
             statsCard(palette: palette)
         }
         .padding(.vertical, 14)
         .padding(.horizontal, 10)
-        .frame(width: 200, alignment: .topLeading)
+        .frame(width: 220, alignment: .topLeading)
         .background(
             LinearGradient(
                 colors: [palette.bgInset, palette.bg.opacity(0)],
@@ -113,6 +111,81 @@ struct SidebarView: View {
         )
     }
 
+    // MARK: - Actions
+
+    private func createTab() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.title = "选择项目文件夹"
+        panel.prompt = "打开"
+        panel.message = "选择一个文件夹以创建新的工作区"
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let name = url.lastPathComponent
+                let tab = try tabManager.createTab(folder: url, name: name)
+                processHost.startProcess(for: tab)
+                tabManager.selectedTabId = tab.id
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "无法创建工作区"
+                alert.informativeText = (error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "确定")
+                alert.runModal()
+            }
+        }
+    }
+
+    private func confirmAndClose(_ tab: Tab) {
+        let alert = NSAlert()
+        alert.messageText = "关闭工作区"
+        alert.informativeText = "关闭后 Claude Code 进程将退出（对话历史已自动保存）。确定关闭 \(tab.name)？"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "关闭")
+        alert.addButton(withTitle: "取消")
+        if alert.runModal() == .alertFirstButtonReturn {
+            processHost.stopProcess(for: tab.id)
+            try? tabManager.removeTab(tab.id)
+        }
+    }
+
+    // MARK: - Server Health (从右侧 ActivityPanel 搬来)
+
+    private func serverHealthCard(palette: ColorPalette) -> some View {
+        let history = ws.latencyHistoryMs
+        let latest = history.last
+        let isConnected: Bool = {
+            if case .connected = ws.state { return true } else { return false }
+        }()
+        let dotColor: Color = isConnected ? palette.success
+            : (history.isEmpty ? palette.textFaint : palette.warn)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                PulseDot(color: dotColor, size: 6, pulse: isConnected)
+                Text("Server 健康")
+                    .font(AppFont.ui(size: 11, weight: .semibold))
+                    .foregroundColor(palette.text)
+                Spacer()
+                Text(latest.map { "\($0)ms" } ?? "—")
+                    .font(AppFont.mono(size: 10))
+                    .foregroundColor(palette.textFaint)
+            }
+            Sparkline(palette: palette, pointsMs: history)
+                .frame(height: 24)
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(palette.bgInset)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.line, lineWidth: 1))
+        )
+    }
+
+    // MARK: - Stats
+
     private func statsCard(palette: ColorPalette) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
@@ -124,7 +197,7 @@ struct SidebarView: View {
                     .foregroundColor(palette.text)
             }
             HStack(spacing: 12) {
-                statCell(label: "Tabs", value: "\(tabManager.tabs.count)", palette: palette)
+                statCell(label: "工作区", value: "\(tabManager.tabs.count)", palette: palette)
                 statCell(label: "设备", value: "\(deviceManager.devices.count)", palette: palette)
             }
             HStack(spacing: 12) {

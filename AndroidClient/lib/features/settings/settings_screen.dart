@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../data/auth_repository.dart';
 import '../../data/secure_storage.dart';
 import '../../data/ws_client.dart';
+import '../../models/server_config.dart';
 import '../../routes/app_router.dart';
 import '../../theme/color_tokens.dart';
 import '../../theme/theme_provider.dart';
@@ -73,6 +74,13 @@ class SettingsScreen extends ConsumerWidget {
                   value: cfg?.agentId.isEmpty ?? true ? '—' : cfg!.agentId,
                 ),
                 _Divider(),
+                _Divider(),
+                if (cfg != null)
+                  _TrustSelfSignedRow(
+                    value: cfg.trustSelfSigned,
+                    onChanged: (next) => _setTrustSelfSigned(ref, cfg, next),
+                  ),
+                _Divider(),
                 _SettingsRow(
                   icon: Icons.history_rounded,
                   label: '查看连接日志',
@@ -139,6 +147,17 @@ class SettingsScreen extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  /// 切换 trust_self_signed:写入 storage,刷新 provider,重连 WS 使新设置生效。
+  Future<void> _setTrustSelfSigned(
+      WidgetRef ref, ServerConfig current, bool next) async {
+    if (current.trustSelfSigned == next) return;
+    final updated = current.copyWith(trustSelfSigned: next);
+    await ref.read(secureStorageProvider).writeConfig(updated);
+    ref.invalidate(initialConfigProvider);
+    // 用新的 trust 设置重新建立 TLS 连接
+    await ref.read(wsClientProvider).connect(updated);
   }
 
   Future<void> _confirmUnbind(BuildContext context, WidgetRef ref) async {
@@ -338,6 +357,40 @@ class _SettingsRow extends StatelessWidget {
                 size: 16, color: t.textFaint),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _TrustSelfSignedRow extends StatelessWidget {
+  final bool value;
+  final ValueChanged<bool> onChanged;
+  const _TrustSelfSignedRow({required this.value, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final t = context.tokens;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      child: Row(
+        children: [
+          Icon(Icons.verified_user_outlined, size: 18, color: t.accent),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('信任自签证书',
+                    style: TextStyle(color: t.text, fontSize: 14)),
+                const SizedBox(height: 2),
+                Text('私有 VPS 自签场景需开启;关闭后将严格校验 CA',
+                    style: TextStyle(color: t.textMuted, fontSize: 11)),
+              ],
+            ),
+          ),
+          Switch(value: value, onChanged: onChanged),
+        ],
       ),
     );
   }

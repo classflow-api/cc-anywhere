@@ -18,6 +18,9 @@ desktop.ini
 # 本地部署调试目录（含 TLS 私钥 / HMAC secret / SQLite / inbox 临时图片）
 local-deploy/
 
+# Claude Code 本地用户偏好(Skill 权限授权等)
+.claude/settings.local.json
+
 # === MacClient (Swift / Xcode / SPM) ===
 MacClient/build/
 MacClient/.build/

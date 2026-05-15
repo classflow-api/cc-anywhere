@@ -74,7 +74,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 data: (s) => MessageCardList(
                   tabId: widget.tabId,
                   state: s,
-                  assistantTyping: false, // 由后续 streaming 状态推断
+                  assistantTyping: state.assistantTyping,
                 ),
                 loading: () => state.messages.isEmpty
                     ? const Center(child: CircularProgressIndicator())
@@ -173,8 +173,6 @@ class _Header extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(width: 8),
-          Icon(Icons.tune_rounded, size: 19, color: t.textMuted),
         ],
       ),
     );

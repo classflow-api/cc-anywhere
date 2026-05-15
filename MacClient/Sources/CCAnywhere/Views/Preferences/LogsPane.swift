@@ -31,9 +31,7 @@ struct LogsPane: View {
 
                         HStack {
                             Button("打开日志窗口") {
-                                if let d = NSApp.delegate as? AppDelegate {
-                                    d.openLogViewer(nil)
-                                }
+                                AppDelegate.shared?.openLogViewer(nil)
                             }
                             Button("在 Finder 中显示") {
                                 NSWorkspace.shared.activateFileViewerSelecting([

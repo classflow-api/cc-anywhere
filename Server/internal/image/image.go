@@ -30,7 +30,8 @@ import (
 
 const (
 	maxImageBytes = 20 * 1024 * 1024
-	uploadTTL     = 5 * time.Minute
+	uploadTTL     = 5 * time.Minute     // 未被 Mac fetched 前的 TTL
+	fetchedTTL    = 7 * 24 * time.Hour  // Mac fetched 后,保留 7 天供 phone 端预览历史
 )
 
 // PhoneSink lets the image service push image.upload.expired to the phone
@@ -70,22 +71,68 @@ type pendingUpload struct {
 	Size      int64
 	CreatedAt time.Time
 	ExpiresAt time.Time
-	Received  bool // set after successful upload write+verify
+	Received  bool      // set after successful upload write+verify
+	Fetched   bool      // set when Mac confirms download via image.fetched
+	FetchedAt time.Time // when Fetched was set; entry kept for fetchedTTL after this
 }
 
 // New constructs the service and ensures the inbox dir exists with 0700.
+// 启动时扫描 inboxDir 已有文件,**重建** pending 内存表为已 fetched 状态。
+// 否则 server 重启后,phone 端历史 chat 中的 attachment 卡片(filename = upload_id+ext)
+// 找不到对应 pending entry → image.download.url 返回空 → 全部显示 broken_image。
 func New(inboxDir, publicHost string, secret []byte, mac MacSink, phone PhoneSink) (*Service, error) {
 	if err := os.MkdirAll(inboxDir, 0o700); err != nil {
 		return nil, fmt.Errorf("mkdir inbox: %w", err)
 	}
-	return &Service{
+	s := &Service{
 		inboxDir:   inboxDir,
 		publicHost: publicHost,
 		secret:     secret,
 		mac:        mac,
 		phone:      phone,
 		pending:    make(map[string]*pendingUpload),
-	}, nil
+	}
+	s.rebuildPendingFromInbox()
+	return s, nil
+}
+
+// rebuildPendingFromInbox 扫描 inboxDir,把现有文件重建为已 fetched 的 pendingUpload entry,
+// 用 mtime 当作 FetchedAt 估算,允许后续 sweepExpired 在超过 fetchedTTL 时清掉。
+// 注:无法恢复 Filename(原文件名)和 Sha256,这些只用于校验,缺失时跳过校验即可。
+func (s *Service) rebuildPendingFromInbox() {
+	entries, err := os.ReadDir(s.inboxDir)
+	if err != nil {
+		slog.Warn("rebuild pending: read inbox", "err", err)
+		return
+	}
+	now := time.Now()
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		// inbox 文件名是 upload_id 或 upload_id.ext;两种都按基名(去 ext)当作 upload_id 的等价主键。
+		// 实际 Mac 端 InputInjector 落盘是 "<upload_id>.<ext>" 形式,Server 这边 download/{id}
+		// 的 id 是纯 upload_id — 这是 Mac 端落盘名跟 server 端 id 的差异。
+		// 但 server 重建 entry 只需要 inbox 里有这个文件、能被 phone 通过 upload_id 重新取到。
+		// 因为 phone 通过 ImageRefStore 拿到的 upload_id 跟 server 文件名是同源关系,
+		// 直接用 e.Name() 当 ID(对 server 内部协议是 self-consistent 的)。
+		name := e.Name()
+		info, ierr := e.Info()
+		if ierr != nil {
+			continue
+		}
+		mtime := info.ModTime()
+		s.pending[name] = &pendingUpload{
+			ID:        name,
+			CreatedAt: mtime,
+			ExpiresAt: mtime.Add(uploadTTL),
+			Received:  true,
+			Fetched:   true,
+			FetchedAt: mtime,
+		}
+		_ = now
+	}
+	slog.Info("rebuilt pending uploads from inbox", "count", len(s.pending))
 }
 
 // BeginUpload validates size, records a pending upload, and returns the
@@ -251,20 +298,35 @@ func (s *Service) HandleDownloadHTTP(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, f)
 }
 
-// HandleFetched is called when Mac confirms the download — wipe immediately.
+// RequestDownloadURL is called when phone wants to (re-)preview an image.
+// 返回的 URL 不依赖于原始 ExpiresAt(那个 5min 早过期了),用 fetchedTTL 重新签 token,
+// 让 phone 在 fetched + 7 天窗口内都能下载预览。
+// 如果 server 上图片已不存在(过期/未上传),返回 ok=false。
+func (s *Service) RequestDownloadURL(uploadID string) (string, string, bool) {
+	s.mu.Lock()
+	pu, ok := s.pending[uploadID]
+	s.mu.Unlock()
+	if !ok || !pu.Received {
+		return "", "", false
+	}
+	// 用 fetchedTTL 起算的新过期 — 允许 phone 在保留期内随时拉
+	exp := time.Now().Add(fetchedTTL)
+	token := s.signToken(uploadID, "download", exp)
+	url := fmt.Sprintf("https://%s/download/%s?token=%s&exp=%d", s.publicHost, uploadID, token, exp.Unix())
+	return url, pu.Filename, true
+}
+
+// HandleFetched is called when Mac confirms the download.
+// 标记 Fetched 但不立即删 — 保留 fetchedTTL,供 phone 端通过 image.download.url
+// 重新获取下载链接预览历史图片(尤其重装/重连后)。
 func (s *Service) HandleFetched(ctx context.Context, uploadID string) {
 	s.mu.Lock()
-	_, ok := s.pending[uploadID]
+	pu, ok := s.pending[uploadID]
 	if ok {
-		delete(s.pending, uploadID)
+		pu.Fetched = true
+		pu.FetchedAt = time.Now()
 	}
 	s.mu.Unlock()
-	if !ok {
-		return
-	}
-	if err := os.Remove(filepath.Join(s.inboxDir, uploadID)); err != nil && !os.IsNotExist(err) {
-		slog.Warn("remove fetched image", "id", uploadID, "err", err)
-	}
 }
 
 // StartGC sweeps expired pending uploads. Run as a background goroutine.
@@ -284,16 +346,34 @@ func (s *Service) StartGC(ctx context.Context) {
 }
 
 func (s *Service) sweepExpired(now time.Time) {
-	var expired []*pendingUpload
+	var unfetchedExpired []*pendingUpload
+	var fetchedExpired []*pendingUpload
 	s.mu.Lock()
 	for id, pu := range s.pending {
+		if pu.Fetched {
+			// 已被 Mac 取走的图片:从 FetchedAt 算起,fetchedTTL 后再清。
+			// 中间这段时间 phone 可以通过 image.download.url 拿新 token 预览。
+			if now.Sub(pu.FetchedAt) > fetchedTTL {
+				fetchedExpired = append(fetchedExpired, pu)
+				delete(s.pending, id)
+			}
+			continue
+		}
+		// 未被 Mac 取走的:超过 uploadTTL 即丢(短 TTL,这种情况通知 phone)。
 		if now.After(pu.ExpiresAt) {
-			expired = append(expired, pu)
+			unfetchedExpired = append(unfetchedExpired, pu)
 			delete(s.pending, id)
 		}
 	}
 	s.mu.Unlock()
 
+	// 已 fetched 过期 — 删文件但不广播 expired(图片已经在 Mac 上用过)
+	for _, pu := range fetchedExpired {
+		_ = os.Remove(filepath.Join(s.inboxDir, pu.ID))
+	}
+
+	// 未 fetched 过期 — 走原 expired 通知路径
+	expired := unfetchedExpired
 	for _, pu := range expired {
 		_ = os.Remove(filepath.Join(s.inboxDir, pu.ID))
 		// Notify the original uploader the image went away. We don't know

@@ -137,12 +137,14 @@ public final class PreferencesService: ObservableObject {
     }
 
     /// The effective palette to apply to the app UI right now.
+    /// `appearance` 是单一真相源：.system 跟系统、.light 强制浅色、.dark 强制深色。
+    /// `followSystemAppearance` 字段保留向后兼容（旧 preferences.json）但 UI 不再暴露。
     public func currentPalette(systemDark: Bool) -> ColorPalette {
         let dark: Bool
-        if followSystemAppearance || appearance == .system {
-            dark = systemDark
-        } else {
-            dark = (appearance == .dark)
+        switch appearance {
+        case .system: dark = systemDark
+        case .light:  dark = false
+        case .dark:   dark = true
         }
         return dark ? .dark : .light
     }
