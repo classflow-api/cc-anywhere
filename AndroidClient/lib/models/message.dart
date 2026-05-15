@@ -175,11 +175,21 @@ class Message {
           }
           // user/assistant 但 content 是字符串
           if (innerContent is String && innerContent.isNotEmpty) {
-            // Claude Code 把用户的 slash command(/clear、/help、/compact 等)
-            // 在 JSONL 里序列化为 <command-name>...</command-name> XML 内部 transcript 格式。
-            // 这是 Claude 给自己看的系统层 representation,用户不需要看到 XML,跳过。
+            // Claude Code 把若干 IDE/CLI 层事件序列化为 XML 内部 transcript 嵌进 user message,
+            // 这些是 Claude 给自己看的系统层 representation,用户不需要看到 XML,精准匹配跳过。
+            const internalTags = [
+              '<command-name>',         // slash command 调用(如 /clear/help/compact)
+              '<local-command-stdout>', // 本地 ! 命令的 stdout
+              '<local-command-stderr>', // 本地 ! 命令的 stderr
+              '<task-notification>',    // 后台 task 状态变化通知
+              '<bash-input>',           // Bash 工具的执行输入
+              '<bash-stdout>',          // Bash 工具的 stdout
+              '<bash-stderr>',          // Bash 工具的 stderr
+              '<system-reminder>',      // 系统提醒(钩子注入)
+            ];
+            final trimmedContent = innerContent.trimLeft();
             if (topType == 'user' &&
-                innerContent.trimLeft().startsWith('<command-name>')) {
+                internalTags.any(trimmedContent.startsWith)) {
               return const [];
             }
             final stringMsg = [
