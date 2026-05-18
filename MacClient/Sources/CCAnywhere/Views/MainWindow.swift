@@ -12,6 +12,7 @@ struct MainWindowView: View {
     @EnvironmentObject var themeManager: ThemeManager
     @EnvironmentObject var fileViewerState: FileViewerState
     @EnvironmentObject var askCardController: AskQuestionCardController
+    @EnvironmentObject var processHost: ProcessHost
 
     var body: some View {
         let palette = themeManager.palette
@@ -59,14 +60,41 @@ struct MainWindowView: View {
                 }
             }
 
-            // AskUserQuestion / Tool Approval 卡片层。
-            // currentRequest=nil 时整层透明且不拦截 hit-test；非 nil 时遮罩主窗口。
-            // allowsHitTesting 根据 currentRequest 联动，避免无 ask 时挡掉主交互。
-            AskQuestionCardView(controller: askCardController)
-                .allowsHitTesting(askCardController.currentRequest != nil
-                                  || askCardController.recentlyAnswered != nil)
+            // AskQuestion 卡片已移到 TabContentView 内嵌底部弹出（按 tab），
+            // 不再全局遮罩主窗口 — 多 tab 间互不阻塞。
         }
         .foregroundColor(palette.text)
+        // 接住 EmptyStateView 按钮的 ccNewTabRequest（之前由 TabStripView 监听，
+        // 但 TabStripView 实际从未在 MainWindow 中实例化，导致按钮 dead click）
+        .onReceive(NotificationCenter.default.publisher(for: .ccNewTabRequest)) { _ in
+            createTabViaPanel()
+        }
+    }
+
+    private func createTabViaPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.title = "选择项目文件夹"
+        panel.prompt = "打开"
+        panel.message = "选择一个文件夹以创建新的 Claude Code Tab"
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                let name = url.lastPathComponent
+                let tab = try tabManager.createTab(folder: url, name: name)
+                processHost.startProcess(for: tab)
+                tabManager.selectedTabId = tab.id
+            } catch {
+                let alert = NSAlert()
+                alert.messageText = "无法创建 Tab"
+                alert.informativeText = (error as? LocalizedError)?.errorDescription
+                    ?? error.localizedDescription
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "确定")
+                alert.runModal()
+            }
+        }
     }
 }
 

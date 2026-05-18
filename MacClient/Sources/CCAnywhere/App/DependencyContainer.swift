@@ -160,6 +160,19 @@ public final class DependencyContainer: ObservableObject {
                 self?.handleAskToolApprovalInbound(msg)
             }
             .store(in: &cancellables)
+
+        // phone 重连 / 新 phone 上线时（phoneCount 增加），重发所有未答 pending ask
+        // 给 phone — 解决用户场景：phone 端 ask 未答时退出 App 重开后看不到 pending 卡片。
+        wsClient.$phoneCount
+            .removeDuplicates()
+            .scan((prev: 0, curr: 0)) { ($0.curr, $1) }
+            .filter { $0.curr > $0.prev }
+            .sink { [weak self] _ in
+                guard let self = self else { return }
+                let server = self.hookIpcServer
+                Task { await server.republishPendingToPhone() }
+            }
+            .store(in: &cancellables)
     }
 
     /// 把 ws 进来的 `ask.question.answer` 投递到 HookIpcServer.actor。

@@ -16,7 +16,86 @@
 // 7. socket 文件权限 0600（R-F1-005），启动时 unlink 残留文件再 bind。
 
 import Foundation
-import Network
+import Darwin
+
+// MARK: - IpcConn (BSD socket connection wrapper)
+//
+// 为什么不用 Network.framework：macOS 的 NWListener 对 Unix domain SOCK_STREAM
+// 监听返回 POSIXErrorCode 22 (EINVAL) — 这是 Network.framework 的已知限制（它的
+// .unix endpoint 只支持 client 侧 NWConnection，不支持 server 侧 NWListener）。
+// 因此 IPC server 用 BSD socket(2) + DispatchSourceRead 实现 accept loop，
+// 每个 client fd 包装为 IpcConn 给上层用。
+
+/// 单个 client 连接的轻量包装。所有 I/O 阻塞，但封装为 async。
+final class IpcConn: @unchecked Sendable {
+    let fd: Int32
+    private var closed = false
+    private let closeLock = NSLock()
+
+    init(fd: Int32) {
+        self.fd = fd
+    }
+
+    /// 阻塞读至 `\n` 或 EOF；返回不含 `\n` 的 Data。
+    func recvLine(maxLen: Int = 1024 * 1024) async throws -> Data {
+        try await Task.detached(priority: .userInitiated) {
+            var buf = Data()
+            var chunk = [UInt8](repeating: 0, count: 65536)
+            while buf.count < maxLen {
+                let n = chunk.withUnsafeMutableBufferPointer { ptr in
+                    Darwin.read(self.fd, ptr.baseAddress, ptr.count)
+                }
+                if n == 0 {
+                    if buf.isEmpty { throw HookIpcServerError.connectionClosed }
+                    return buf
+                }
+                if n < 0 {
+                    let err = errno
+                    if err == EINTR { continue }
+                    throw HookIpcServerError.connectionClosed
+                }
+                let received = chunk.prefix(n)
+                buf.append(contentsOf: received)
+                if let _ = received.firstIndex(of: 0x0A) {
+                    // 截到 \n 之前
+                    if let nl = buf.firstIndex(of: 0x0A) {
+                        return buf.prefix(nl)
+                    }
+                    return buf
+                }
+            }
+            throw HookIpcServerError.frameTooLarge
+        }.value
+    }
+
+    /// 阻塞写完整 data（包括尾部 `\n` 由调用方追加）。
+    func sendData(_ data: Data) async {
+        await Task.detached(priority: .userInitiated) {
+            var sent = 0
+            data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                let p = raw.baseAddress!
+                while sent < data.count {
+                    let n = Darwin.write(self.fd, p.advanced(by: sent), data.count - sent)
+                    if n < 0 {
+                        if errno == EINTR { continue }
+                        return
+                    }
+                    if n == 0 { return }
+                    sent += n
+                }
+            }
+        }.value
+    }
+
+    func close() {
+        closeLock.lock()
+        defer { closeLock.unlock() }
+        if !closed {
+            _ = Darwin.close(fd)
+            closed = true
+        }
+    }
+}
 
 // MARK: - 内部数据结构
 
@@ -31,6 +110,10 @@ private struct PendingAskRequest {
     /// 用于把响应回写给 hook bridge socket。
     let continuation: CheckedContinuation<HookIpcResponseAsk, Never>
     var answered: Bool = false
+    // 以下字段用于 republishPendingToPhone 重发（phone 重连恢复未答 ask 卡片）
+    let questions: [AskQuestionItem]?
+    let toolName: String?
+    let toolInput: AnyJSON?
 }
 
 // MARK: - HookIpcServer
@@ -55,12 +138,16 @@ public actor HookIpcServer {
     // MARK: 内部状态
 
     private var pendingRequests: [String: PendingAskRequest] = [:]
-    private var listener: NWListener?
+    private var serverFD: Int32 = -1
+    private var acceptSource: DispatchSourceRead?
     private var reapTimer: Task<Void, Never>?
     private var running: Bool = false
 
     /// 默认 ask 请求超时 5 分钟。
-    public static let defaultAskDeadline: TimeInterval = 5 * 60
+    /// Mac App inner timeout — 卡片未答时降级到 Claude TUI 自带弹窗的时机。
+    /// 与 settings.json 中 hook `timeout: 1800` (30 分钟) 对齐，保证 30 分钟内
+    /// 走在 cc-anywhere 远程通道（中途走开干点别的也不会被踢回 TUI）。
+    public static let defaultAskDeadline: TimeInterval = 30 * 60
     /// reaper 扫描间隔 30s。
     public static let reapInterval: TimeInterval = 30
 
@@ -87,7 +174,7 @@ public actor HookIpcServer {
 
     public func isRunning() -> Bool { running }
 
-    /// 启动 NWListener + reapTimer。
+    /// 启动 BSD Unix domain socket listener + reapTimer。
     /// - 若残留 socket 文件存在，先 unlink。
     /// - bind 后 chmod 0600（R-F1-005）。
     public func start() throws {
@@ -106,66 +193,74 @@ public actor HookIpcServer {
 
         // unlink 残留文件
         if FileManager.default.fileExists(atPath: path) {
-            do {
-                try FileManager.default.removeItem(atPath: path)
-                log.info("removed stale socket at \(path)")
-            } catch {
-                log.error("failed to remove stale socket: \(error)")
-                throw HookIpcServerError.socketUnlinkFailed(error.localizedDescription)
-            }
+            try? FileManager.default.removeItem(atPath: path)
         }
 
-        // 创建 NWListener 监听 Unix domain socket
-        let params = NWParameters()
-        params.allowLocalEndpointReuse = true
-        params.requiredLocalEndpoint = NWEndpoint.unix(path: path)
-
-        let listener: NWListener
-        do {
-            listener = try NWListener(using: params)
-        } catch {
-            log.error("NWListener init failed: \(error)")
-            throw HookIpcServerError.listenerInitFailed(error.localizedDescription)
+        // 1. socket(2)
+        let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
+        if fd < 0 {
+            throw HookIpcServerError.listenerInitFailed("socket() errno=\(errno)")
         }
 
-        // accept loop（每个连接独立 Task）
-        listener.newConnectionHandler = { [weak self] connection in
-            guard let self = self else {
-                connection.cancel()
-                return
-            }
-            Task { await self.handleConnection(connection) }
+        // 2. bind(2)
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        // sun_path 限长 104（macOS）。
+        let pathBytes = path.utf8CString
+        let maxLen = MemoryLayout.size(ofValue: addr.sun_path)
+        if pathBytes.count > maxLen {
+            Darwin.close(fd)
+            throw HookIpcServerError.listenerInitFailed("socket path too long (>\(maxLen))")
         }
-
-        listener.stateUpdateHandler = { [weak self] state in
-            guard let self = self else { return }
-            Task { await self.handleListenerState(state) }
-        }
-
-        listener.start(queue: .global(qos: .userInitiated))
-        self.listener = listener
-        self.running = true
-
-        // chmod 0600 — NWListener 创建出 socket 文件后立即 chmod。
-        // 注意：bind 是异步的，文件可能尚未存在。我们 spawn 一个 Task 轮询若干次。
-        Task { [path, log] in
-            for _ in 0..<20 {
-                if FileManager.default.fileExists(atPath: path) {
-                    do {
-                        try FileManager.default.setAttributes(
-                            [.posixPermissions: NSNumber(value: 0o600)],
-                            ofItemAtPath: path
-                        )
-                        log.info("socket chmod 0600 applied at \(path)")
-                    } catch {
-                        log.error("chmod failed: \(error)")
-                    }
-                    return
+        _ = withUnsafeMutablePointer(to: &addr.sun_path) { ptr in
+            ptr.withMemoryRebound(to: CChar.self, capacity: maxLen) { dst in
+                pathBytes.withUnsafeBufferPointer { src in
+                    memcpy(dst, src.baseAddress, pathBytes.count)
                 }
-                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
             }
-            log.warn("socket file did not appear within 2s for chmod")
         }
+        let bindResult = withUnsafePointer(to: &addr) { ptr -> Int32 in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
+                Darwin.bind(fd, sa, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        if bindResult < 0 {
+            let e = errno
+            Darwin.close(fd)
+            throw HookIpcServerError.listenerInitFailed("bind() errno=\(e)")
+        }
+
+        // 3. chmod 0600（R-F1-005）
+        _ = Darwin.chmod(path, 0o600)
+
+        // 4. listen(2)
+        if Darwin.listen(fd, 16) < 0 {
+            let e = errno
+            Darwin.close(fd)
+            try? FileManager.default.removeItem(atPath: path)
+            throw HookIpcServerError.listenerInitFailed("listen() errno=\(e)")
+        }
+
+        self.serverFD = fd
+
+        // 5. accept loop via DispatchSourceRead — fd 可读即代表有新连接
+        let source = DispatchSource.makeReadSource(
+            fileDescriptor: fd,
+            queue: DispatchQueue.global(qos: .userInitiated)
+        )
+        source.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            let clientFD = Darwin.accept(fd, nil, nil)
+            if clientFD < 0 { return }
+            let conn = IpcConn(fd: clientFD)
+            Task { await self.handleConnection(conn) }
+        }
+        source.setCancelHandler {
+            Darwin.close(fd)
+        }
+        source.resume()
+        self.acceptSource = source
+        self.running = true
 
         // reap timer
         reapTimer = Task { [weak self] in
@@ -176,7 +271,7 @@ public actor HookIpcServer {
             }
         }
 
-        log.info("HookIpcServer started at \(path)")
+        log.info("HookIpcServer started at \(path) (BSD socket fd=\(fd))")
     }
 
     /// 停止 listener，清理 pending requests（全部 resolve 为 cancelled），删除 socket 文件。
@@ -187,8 +282,9 @@ public actor HookIpcServer {
         reapTimer?.cancel()
         reapTimer = nil
 
-        listener?.cancel()
-        listener = nil
+        acceptSource?.cancel()  // setCancelHandler 内已 close(fd)
+        acceptSource = nil
+        serverFD = -1
 
         // resolve 所有还在 pending 的请求（按 cancelled 处理）
         for (_, var req) in pendingRequests where !req.answered {
@@ -201,6 +297,29 @@ public actor HookIpcServer {
         try? FileManager.default.removeItem(at: socketPath)
 
         log.info("HookIpcServer stopped")
+    }
+
+    /// 重新广播所有未答完的 pending request 给 ws 端（phone）。
+    /// 触发时机：phone 重连或新 phone 上线时（DependencyContainer 监听 phoneCount 增加）。
+    /// 避免用户场景：phone 端 ask 未答时关 App → 重开后看不到 pending 卡片（state 丢失）。
+    public func republishPendingToPhone() async {
+        guard let ws = wsClient else { return }
+        for (_, req) in pendingRequests where !req.answered {
+            let payload = AskQuestionPendingPayload(
+                requestId: req.requestId,
+                tabId: req.tabId.uuidString,
+                toolUseId: req.toolUseId,
+                askKind: req.askKind,
+                allowOther: true,
+                questions: req.questions,
+                toolName: req.toolName,
+                toolInput: req.toolInput
+            )
+            await MainActor.run {
+                ws.sendAskQuestionPending(payload)
+            }
+        }
+        log.info("republished \(pendingRequests.count) pending ask request(s) to phone")
     }
 
     // MARK: ws 入口（外部 ws 收到 phone 回复时调用）
@@ -342,39 +461,20 @@ public actor HookIpcServer {
         }
     }
 
-    // MARK: 内部：listener 状态
-
-    private func handleListenerState(_ state: NWListener.State) {
-        switch state {
-        case .ready:
-            log.info("listener ready")
-        case .failed(let error):
-            log.error("listener failed: \(error)")
-            running = false
-        case .cancelled:
-            log.info("listener cancelled")
-            running = false
-        default:
-            log.debug("listener state=\(state)")
-        }
-    }
-
     // MARK: 内部：连接处理
 
     /// 处理一个 hook bridge 进来的连接：
     /// 1. 读 line-delimited JSON
     /// 2. 反序列化 HookIpcRequest
     /// 3. 根据 kind 路由：ask 阻塞等待 / progress|notification 立即 reply `{}`
-    private func handleConnection(_ connection: NWConnection) async {
-        connection.start(queue: .global(qos: .userInitiated))
-
+    private func handleConnection(_ connection: IpcConn) async {
         // 读一帧（直到 `\n` 为止）
         let reqLineData: Data
         do {
-            reqLineData = try await Self.readLine(from: connection)
+            reqLineData = try await connection.recvLine()
         } catch {
             log.warn("read request line failed: \(error)")
-            connection.cancel()
+            connection.close()
             return
         }
 
@@ -387,7 +487,7 @@ public actor HookIpcServer {
             // 返回空对象 → hook bridge 透传给 SDK → 走 fallback。
             log.warn("decode request failed: \(error); raw=\(String(data: reqLineData, encoding: .utf8) ?? "")")
             await Self.sendResponse(connection: connection, json: [:])
-            connection.cancel()
+            connection.close()
             return
         }
 
@@ -398,7 +498,7 @@ public actor HookIpcServer {
               let tabUUID = tabRouter.uuid(forTabIdString: req.tabId) else {
             log.warn("unknown tab_id=\(req.tabId), kind=\(req.kind); soft-fail")
             await Self.sendResponse(connection: connection, json: [:])
-            connection.cancel()
+            connection.close()
             return
         }
 
@@ -415,16 +515,17 @@ public actor HookIpcServer {
             // NFR-U1：未知 kind 属系统级错误，软失败返回 {} 让 SDK 走 fallback
             log.warn("unknown kind=\(req.kind); soft-fail")
             await Self.sendResponse(connection: connection, json: [:])
-            connection.cancel()
+            connection.close()
         }
     }
 
     // MARK: 内部：ask 处理
 
-    private func handleAsk(req: HookIpcRequest, tabUUID: UUID, connection: NWConnection) async {
+    private func handleAsk(req: HookIpcRequest, tabUUID: UUID, connection: IpcConn) async {
         let requestId = UUID().uuidString  // R-F1-015
         let toolUseId = req.toolUseId ?? ""
         let toolName = req.toolName ?? ""
+        log.info("handleAsk: req=\(requestId) tool=\(toolName) toolUseId=\(toolUseId) tab=\(tabUUID)")
 
         // 判定 askKind：AskUserQuestion → user_question；其它 → tool_approval
         let askKind: String = (toolName == "AskUserQuestion") ? "user_question" : "tool_approval"
@@ -445,7 +546,10 @@ public actor HookIpcServer {
                 createdAt: Date(),
                 deadline: Date().addingTimeInterval(Self.defaultAskDeadline),
                 continuation: continuation,
-                answered: false
+                answered: false,
+                questions: questions,
+                toolName: req.toolName,
+                toolInput: req.toolInput
             )
             pendingRequests[requestId] = pending
 
@@ -500,12 +604,12 @@ public actor HookIpcServer {
 
         // 把响应写回 hook bridge socket（一行 JSON + \n）
         await Self.sendResponseAsk(connection: connection, response: response)
-        connection.cancel()
+        connection.close()
     }
 
     // MARK: 内部：progress / notification
 
-    private func handleProgressPre(req: HookIpcRequest, tabUUID: UUID, connection: NWConnection) async {
+    private func handleProgressPre(req: HookIpcRequest, tabUUID: UUID, connection: IpcConn) async {
         let toolUseId = req.toolUseId ?? ""
         if !toolUseId.isEmpty {
             jsonlWatcher?.markHookPushed(toolUseId: toolUseId)
@@ -522,10 +626,10 @@ public actor HookIpcServer {
             await MainActor.run { ws.sendToolProgressPre(payload) }
         }
         await Self.sendResponse(connection: connection, json: [:])
-        connection.cancel()
+        connection.close()
     }
 
-    private func handleProgressPost(req: HookIpcRequest, tabUUID: UUID, connection: NWConnection) async {
+    private func handleProgressPost(req: HookIpcRequest, tabUUID: UUID, connection: IpcConn) async {
         let toolUseId = req.toolUseId ?? ""
         if !toolUseId.isEmpty {
             jsonlWatcher?.markHookPushed(toolUseId: toolUseId)
@@ -543,10 +647,10 @@ public actor HookIpcServer {
             await MainActor.run { ws.sendToolProgressPost(payload) }
         }
         await Self.sendResponse(connection: connection, json: [:])
-        connection.cancel()
+        connection.close()
     }
 
-    private func handleNotification(req: HookIpcRequest, tabUUID: UUID, connection: NWConnection) async {
+    private func handleNotification(req: HookIpcRequest, tabUUID: UUID, connection: IpcConn) async {
         if let ws = wsClient {
             let payload = NotificationPayload(
                 tabId: tabUUID.uuidString,
@@ -557,7 +661,7 @@ public actor HookIpcServer {
             await MainActor.run { ws.sendNotification(payload) }
         }
         await Self.sendResponse(connection: connection, json: [:])
-        connection.cancel()
+        connection.close()
     }
 
     // MARK: 内部：JSON 解析辅助
@@ -646,75 +750,27 @@ public actor HookIpcServer {
 
     // MARK: 静态辅助：socket I/O
 
-    /// 从 NWConnection 读一帧（直到 `\n`，最大 1MB）。
-    private static func readLine(from connection: NWConnection) async throws -> Data {
-        // 简单循环读，直到遇到 \n 或连接断开。
-        var buf = Data()
-        let maxLen = 1024 * 1024
-        while buf.count < maxLen {
-            let chunk: Data? = try await withCheckedThrowingContinuation { cont in
-                connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { data, _, isComplete, error in
-                    if let error = error {
-                        cont.resume(throwing: error)
-                        return
-                    }
-                    if let data = data, !data.isEmpty {
-                        cont.resume(returning: data)
-                        return
-                    }
-                    if isComplete {
-                        cont.resume(returning: nil)
-                        return
-                    }
-                    cont.resume(returning: Data())
-                }
-            }
-            guard let chunk = chunk else {
-                // 连接已关闭
-                if buf.isEmpty {
-                    throw HookIpcServerError.connectionClosed
-                }
-                return buf
-            }
-            buf.append(chunk)
-            if let nl = chunk.firstIndex(of: 0x0A) {
-                // 找到 \n。截到 \n 之前。
-                let bufNLIdx = buf.count - (chunk.count - nl)
-                return buf.prefix(bufNLIdx)
-            }
-        }
-        throw HookIpcServerError.frameTooLarge
-    }
-
     /// 把 HookIpcResponseAsk 编码为一行 JSON + `\n` 写回。
-    private static func sendResponseAsk(connection: NWConnection,
+    private static func sendResponseAsk(connection: IpcConn,
                                         response: HookIpcResponseAsk) async {
         do {
             var data = try JSONEncoder().encode(response)
             data.append(0x0A)
-            await sendData(connection: connection, data: data)
+            await connection.sendData(data)
         } catch {
             AppLogger.shared.tagged("HookIpcServer").error("encode response failed: \(error)")
         }
     }
 
     /// 把任意 dict 编码为一行 JSON + `\n` 写回。
-    private static func sendResponse(connection: NWConnection,
+    private static func sendResponse(connection: IpcConn,
                                      json: [String: Any]) async {
         do {
             var data = try JSONSerialization.data(withJSONObject: json, options: [])
             data.append(0x0A)
-            await sendData(connection: connection, data: data)
+            await connection.sendData(data)
         } catch {
             AppLogger.shared.tagged("HookIpcServer").error("encode response dict failed: \(error)")
-        }
-    }
-
-    private static func sendData(connection: NWConnection, data: Data) async {
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            connection.send(content: data, completion: .contentProcessed { _ in
-                cont.resume()
-            })
         }
     }
 }

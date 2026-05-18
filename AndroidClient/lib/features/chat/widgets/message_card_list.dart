@@ -38,11 +38,16 @@ class _MessageCardListState extends ConsumerState<MessageCardList> {
   bool _atBottom = true;
   int _lastMsgCount = 0;
 
+  /// 首次进入聊天界面是否已完成初始滚到底（防止重复触发）。
+  bool _initialScrollDone = false;
+
   @override
   void initState() {
     super.initState();
     _scrollCtrl.addListener(_onScroll);
-    WidgetsBinding.instance.addPostFrameCallback((_) => _jumpToBottom());
+    // 进入聊天界面立即多帧 retry 跳到底（ListView lazy build + 异步数据加载
+    // 导致首帧 maxScrollExtent 可能 = 0，需要多帧 retry 兜底）。
+    _scheduleInitialJump();
   }
 
   @override
@@ -51,7 +56,10 @@ class _MessageCardListState extends ConsumerState<MessageCardList> {
     final newLen = widget.state.messages.length;
     if (newLen > _lastMsgCount) {
       final delta = newLen - _lastMsgCount;
-      if (_atBottom) {
+      if (!_initialScrollDone) {
+        // 首次拿到非空消息列表 → 瞬间到底（用户进入聊天即在最新消息位置）
+        _scheduleInitialJump();
+      } else if (_atBottom) {
         WidgetsBinding.instance
             .addPostFrameCallback((_) => _scrollToBottom(animate: true));
       } else {
@@ -59,6 +67,20 @@ class _MessageCardListState extends ConsumerState<MessageCardList> {
       }
     }
     _lastMsgCount = newLen;
+  }
+
+  /// 在 0/80/200/400ms 各跳一次，确保异步加载完成 + layout 稳定后真到底。
+  void _scheduleInitialJump() {
+    for (final ms in const [0, 80, 200, 400]) {
+      Future.delayed(Duration(milliseconds: ms), () {
+        if (!mounted) return;
+        _jumpToBottom();
+      });
+    }
+    // 最后一次 retry 完后标记完成（之后走正常 didUpdateWidget 滚动逻辑）
+    Future.delayed(const Duration(milliseconds: 450), () {
+      if (mounted) _initialScrollDone = true;
+    });
   }
 
   @override
@@ -239,6 +261,23 @@ class _MessageCardListState extends ConsumerState<MessageCardList> {
       case MessageKind.attachment:
         return AttachmentCard(key: ValueKey(m.uuid), message: m);
       case MessageKind.askUserQuestion:
+        // 双卡显示治理：浮动 realtime card（chat_screen 渲染）负责 pending 阶段的交互。
+        // 消息流里只在 ask "已答完" 后才作为历史记录展示一个精简卡，未答完直接隐藏。
+        // 判定方式：查找 messages 中是否存在 tool_use_id 与本 ask 匹配的 toolResult。
+        final tuid = m.toolUseId;
+        if (tuid == null || tuid.isEmpty) {
+          // 没 tool_use_id 无法配对，保守隐藏（pending 由浮动卡显示）
+          return const SizedBox.shrink();
+        }
+        final result = widget.state.messages.firstWhere(
+          (x) => x.kind == MessageKind.toolResult && x.toolUseId == tuid,
+          orElse: () => m, // sentinel
+        );
+        if (identical(result, m)) {
+          // 未找到配对 toolResult → ask 还在 pending，隐藏让浮动卡接管
+          return const SizedBox.shrink();
+        }
+        // 已答完：渲染精简"已回答"记录卡
         return AskUserQuestionCard(
           key: ValueKey(m.uuid),
           message: m,

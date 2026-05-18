@@ -38,6 +38,10 @@ dependencies:
   # Device info
   device_info_plus: ^10.1.2
 
+  # 系统级通知（ask.question.pending 到达时即便 App 不在前台也弹通知）
+  flutter_local_notifications: ^17.2.3
+  # permission_handler 已在下方既有依赖列表中（无需重复）
+
   # Lightweight key-value persistence (image_id 映射等)
   shared_preferences: ^2.3.2
 

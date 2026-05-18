@@ -77,6 +77,11 @@ public final class WSClientHookIpcSink: HookIpcWsSink {
             log.error("encode \(type) failed: \(error)")
             return
         }
+        log.info("ws push: type=\(type)")
+        // DIAG: 把实际 encode 后的 JSON 字符串打出来排查字段名问题
+        if type == "ask.question.pending", let d = try? JSONEncoder().encode(payload), let s = String(data: d, encoding: .utf8) {
+            log.info("ws push DIAG json: \(s)")
+        }
         Task { @MainActor in
             await ws.send(ProtocolMessage(type: type, data: any))
         }

@@ -23,8 +23,11 @@ import Foundation
 /// 同时反向通过 `hookIpcServer` 弱引用，把 UI 侧的回答转发给 server。
 @MainActor
 public final class AskQuestionCardController: ObservableObject, HookIpcCardSink {
-    @Published public private(set) var currentRequest: AskCardRequestData?
-    @Published public private(set) var recentlyAnswered: AnsweredInfo?
+    /// 按 tab 维护 pending request（多工作区独立 — 用户反馈：A 工作区的 ask
+    /// 不应阻塞 B 工作区，每个 tab 只看自己的卡片）。
+    @Published public private(set) var pendingByTab: [UUID: AskCardRequestData] = [:]
+    /// 按 tab 维护已回答 banner（3 秒自动消失）。
+    @Published public private(set) var answeredByTab: [UUID: AnsweredInfo] = [:]
 
     /// 用于反向调用 `receiveLocalAnswerFromMacCard` /
     /// `receiveLocalApprovalFromMacCard`。
@@ -35,38 +38,49 @@ public final class AskQuestionCardController: ObservableObject, HookIpcCardSink 
 
     public init() {}
 
+    /// View 端按 tab 查询当前 pending（@Published map 变化自动驱动重绘）。
+    public func pending(forTab tabId: UUID) -> AskCardRequestData? {
+        pendingByTab[tabId]
+    }
+
+    /// View 端按 tab 查询已回答 banner。
+    public func answered(forTab tabId: UUID) -> AnsweredInfo? {
+        answeredByTab[tabId]
+    }
+
     // MARK: - HookIpcCardSink
 
     /// HookIpcServer 在收到 hook bridge 的 ask 请求时调用，surface 到 UI。
     public func show(request: AskCardRequestData) async {
-        self.currentRequest = request
-        self.recentlyAnswered = nil
+        pendingByTab[request.tabId] = request
+        answeredByTab.removeValue(forKey: request.tabId)
     }
 
     /// HookIpcServer 在 winner 裁定 / 超时 / 取消时调用。
     ///
-    /// 仅当 `requestId` 与当前 currentRequest 匹配时才处理（防止过期消息覆盖
-    /// 后续新请求）。
+    /// 通过 requestId 反查所属 tab（防止过期消息覆盖后续新请求）。
     public func dismiss(requestId: String,
                         reason: AskDismissReason,
                         by: String?) async {
-        guard self.currentRequest?.requestId == requestId else { return }
+        // 找到 requestId 所属的 tab
+        guard let tabId = pendingByTab.first(where: { $0.value.requestId == requestId })?.key else {
+            return
+        }
         if reason == .answered {
-            self.recentlyAnswered = AnsweredInfo(
+            answeredByTab[tabId] = AnsweredInfo(
                 requestId: requestId,
                 answeredBy: by ?? "unknown",
                 expireAt: Date().addingTimeInterval(Self.answeredBannerTTL)
             )
         }
-        self.currentRequest = nil
+        pendingByTab.removeValue(forKey: tabId)
 
-        // answered banner 在 TTL 后自动消失（其它 reason 不展示 banner，
-        // 但仍然走 clearAnsweredBadge 以兜底）。
+        // answered banner 在 TTL 后自动消失。
         let pinnedRequestId = requestId
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.answeredBannerTTL) { [weak self] in
             guard let self = self else { return }
-            if self.recentlyAnswered?.requestId == pinnedRequestId {
-                self.recentlyAnswered = nil
+            if self.answeredByTab[tabId]?.requestId == pinnedRequestId {
+                self.answeredByTab.removeValue(forKey: tabId)
             }
         }
     }
@@ -98,9 +112,9 @@ public final class AskQuestionCardController: ObservableObject, HookIpcCardSink 
         }
     }
 
-    /// 手动关闭 answered banner（用户主动点 ×）。
-    public func clearAnsweredBadge() {
-        recentlyAnswered = nil
+    /// 手动关闭某 tab 的 answered banner（用户主动点 ×）。
+    public func clearAnsweredBadge(forTab tabId: UUID) {
+        answeredByTab.removeValue(forKey: tabId)
     }
 }
 

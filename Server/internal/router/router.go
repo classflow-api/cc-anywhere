@@ -1,6 +1,19 @@
 // Package router dispatches authenticated envelopes between Mac and phones.
-// It owns no state — pure forwarding plus a few type-specific side effects
-// (e.g. image.fetched → image.Service cleanup).
+//
+// 设计原则（dumb proxy / "哑代理"）：
+// Server 只负责注册（bind / 鉴权 / 设备绑定）、发现（presence / device.*）、
+// 内部能力（image upload/download）。**业务协议完全由 Mac/Phone 端自己定义**，
+// Server 对未知 type 一律透传：
+//   - Mac → 任意 type → BroadcastToPhones
+//   - Phone → 任意 type → MacConnSend（mac 离线返回 MAC_OFFLINE）
+//
+// 收益：Mac/Phone 加任何新 type / 协议演进都**不需要**重新部署 Server。
+// 上次本需求 L4 加 7 个 type 时必须 docker rebuild，将来不会再发生。
+//
+// 安全性：Server 内部处理的 type（bind/device/image/presence/force_disconnect/error）
+// 已由 server.go 的 dispatchFromMac / dispatchFromPhone 在 `default` 分支 *之前*
+// case 拦截掉，不会进入本 router。即便 Mac/Phone 误发这些 type 进 router，对端
+// 收到也只是把它当作未知 type 默默丢弃（不影响协议）。
 package router
 
 import (
@@ -37,59 +50,29 @@ func New(mac MacSink, phone PhoneSink, image ImageHook) *Router {
 	return &Router{mac: mac, phone: phone, image: image}
 }
 
-// RouteFromMac forwards a Mac-originated envelope to phones. Returns an
-// error envelope if the type is unroutable; otherwise nil.
+// RouteFromMac broadcasts any Mac-originated business envelope to all phones.
+// 不再为每个新 type 维护白名单 —— 未识别 type 也无脑透传（dumb proxy）。
+// Server-internal types (bind/device/image/presence/force_disconnect/error)
+// 在 server.go dispatchFromMac 内部已先行处理，不会进入这里。
 func (r *Router) RouteFromMac(env *protocol.Envelope) *protocol.Envelope {
-	switch env.Type {
-	case protocol.TypeMsgStream,
-		protocol.TypeMsgRaw,
-		protocol.TypeMsgHistoryResponse,
-		protocol.TypeTabList,
-		protocol.TypeTabListResponse,
-		protocol.TypeSlashListResponse,
-		protocol.TypeTabChanged,
-		protocol.TypeInputError,
-		// 4.7 Hook 实时桥接：mac→phone
-		protocol.TypeAskQuestionPending,
-		protocol.TypeAskQuestionAnswered,
-		protocol.TypeAskQuestionTimeout,
-		protocol.TypeToolProgressPre,
-		protocol.TypeToolProgressPost,
-		protocol.TypeNotification:
-		r.phone.BroadcastToPhones(env)
-		return nil
-	}
-	// Anything else from Mac is silently ignored (could be device.* handled
-	// elsewhere or an unknown type). We don't error out the connection.
+	r.phone.BroadcastToPhones(env)
 	return nil
 }
 
-// RouteFromPhone forwards a phone-originated envelope to the Mac. Returns an
-// error envelope (caller sends to the phone) when Mac is offline or msg is
-// unroutable.
+// RouteFromPhone forwards any phone-originated business envelope to the Mac.
+// 不再为每个新 type 维护白名单。Mac 离线则返回 MAC_OFFLINE error 给 phone。
+// Server-internal types 同上由 dispatchFromPhone 前置处理。
 func (r *Router) RouteFromPhone(ctx context.Context, env *protocol.Envelope) *protocol.Envelope {
-	switch env.Type {
-	case protocol.TypeInputText,
-		protocol.TypeToolUseApprove,
-		protocol.TypeMsgHistoryRequest,
-		protocol.TypeTabListRequest,
-		protocol.TypeSlashListRequest,
-		// 4.7 Hook 实时桥接：phone→mac
-		protocol.TypeAskQuestionAnswer,
-		protocol.TypeAskToolApprovalAnswer:
-		if !r.mac.HasMac() {
-			return errorEnvelope(protocol.CodeMacOffline, "mac is offline")
-		}
-		r.mac.MacConnSend(env)
-		return nil
+	if !r.mac.HasMac() {
+		slog.Debug("phone msg dropped: mac offline", "type", env.Type)
+		return errorEnvelope(protocol.CodeMacOffline, "mac is offline")
 	}
-	slog.Debug("unroutable from phone", "type", env.Type)
+	r.mac.MacConnSend(env)
 	return nil
 }
 
 // RouteImageFetched is called when the router sees image.fetched from Mac.
-// It still gets forwarded as a normal "from-mac" event (in case a phone wants
-// to know), but the real work is image cleanup.
+// 这是 server-internal 路径（清理 inbox 临时文件），不走 RouteFromMac。
 func (r *Router) RouteImageFetched(ctx context.Context, env *protocol.Envelope) {
 	if r.image == nil {
 		return

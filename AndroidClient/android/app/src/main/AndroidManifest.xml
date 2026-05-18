@@ -13,8 +13,12 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
+    <!-- 系统通知（ask.question.pending 强提醒 + 震动） -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <application
-        android:label="cc-anywhere"
+        android:label="遥指"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

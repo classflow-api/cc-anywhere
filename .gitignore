@@ -18,6 +18,18 @@ desktop.ini
 # 本地部署调试目录（含 TLS 私钥 / HMAC secret / SQLite / inbox 临时图片）
 local-deploy/
 
+# 工作日报（开发者个人记录，不入开源仓）
+docs/daily/
+
+# 临时调试脚本 / Claude Code 上下文缓存
+/tmp/
+*.log
+.claude/projects/
+
+# build_app.sh 临时产物
+MacClient/.build/遥指.app
+MacClient/.build/CCAnywhere.app
+
 # Claude Code 本地用户偏好(Skill 权限授权等)
 .claude/settings.local.json
 

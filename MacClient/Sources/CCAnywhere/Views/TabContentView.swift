@@ -85,6 +85,7 @@ struct TabContentView: View {
     @EnvironmentObject var tabManager: TabManager
     @EnvironmentObject var themeManager: ThemeManager
     @EnvironmentObject var preferences: PreferencesService
+    @EnvironmentObject var askCardController: AskQuestionCardController
 
     var body: some View {
         let palette = themeManager.palette
@@ -134,14 +135,19 @@ struct TabContentView: View {
                 processErrorBanner(palette: palette)
             }
 
-            // SwiftTerm host
-            SwiftTermHost(tabId: tab.id, theme: theme, fontSize: preferences.terminalFontSize)
-                .background(theme.bgSwiftUI)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(palette.line, lineWidth: 1)
-                )
+            // SwiftTerm host + AskQuestion 卡片（底部弹出，只在本 tab 内）
+            ZStack(alignment: .bottom) {
+                SwiftTermHost(tabId: tab.id, theme: theme, fontSize: preferences.terminalFontSize)
+                    .background(theme.bgSwiftUI)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(palette.line, lineWidth: 1)
+                    )
+                // ASK 卡片层：仅在本 tab pending 时显示，从终端底部往上弹出。
+                // 不遮罩整个 tab，用户可随时切到别的 tab 处理别的事。
+                AskQuestionCardView(controller: askCardController, tabId: tab.id)
+            }
         }
         .padding(14)
         .background(palette.bg)

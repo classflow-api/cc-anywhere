@@ -323,20 +323,22 @@ final class WatchStream {
         return true
     }
 
-    /// 从 JSONL raw 行中提取所有 tool_use_id（assistant.tool_use.id 与 user.tool_result.tool_use_id）。
+    /// 从 JSONL raw 行中提取已被 hook 推送过的 tool_use_id（仅 assistant.tool_use.id）。
+    /// **不**包含 user.tool_result.tool_use_id —— tool_result 是答案落地记录，
+    /// phone 端 message_card_list 需要它来配对 toolUseId 渲染"已回答"精简记录卡，
+    /// 不能因为 hook 推过 tool_use 就把 tool_result 一并跳过（否则 phone 永远
+    /// 看不到 ask 的答案历史）。
     private func extractToolUseIds(from raw: String) -> [String] {
         guard let data = raw.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
-        let type = obj["type"] as? String ?? ""
-        guard type == "assistant" || type == "user" else { return [] }
+        // 只处理 assistant message 中的 tool_use（user message 中的 tool_result 不去重）
+        guard (obj["type"] as? String) == "assistant" else { return [] }
         var ids: [String] = []
         if let message = obj["message"] as? [String: Any],
            let content = message["content"] as? [[String: Any]] {
             for item in content {
-                let itemType = item["type"] as? String ?? ""
-                if itemType == "tool_use", let id = item["id"] as? String {
-                    ids.append(id)
-                } else if itemType == "tool_result", let id = item["tool_use_id"] as? String {
+                if (item["type"] as? String) == "tool_use",
+                   let id = item["id"] as? String {
                     ids.append(id)
                 }
             }

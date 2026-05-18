@@ -58,7 +58,10 @@ class ColorTokens {
     textFaint: Color(0xFF8A8F9C),
     accent: Color(0xFF4E9CB9), // oklch(0.62 0.13 215)
     accentSoft: Color(0xFFD4ECF3), // oklch(0.92 0.06 215)
-    accentFg: Color(0xFF0A2433),
+    // accentFg：accent 背景上的对比文字色。accent + accentGradEnd 是深蓝绿渐变，
+    // 必须用白色才有足够对比度（之前误用深蓝 0xFF0A2433 导致用户气泡里的文字与
+    // 发送按钮图标在浅色模式下几乎黑色，看不清）。
+    accentFg: Color(0xFFFFFFFF),
     success: Color(0xFF1FAF6A), // oklch(0.65 0.15 155)
     warn: Color(0xFFE2A338), // oklch(0.78 0.16 70)
     danger: Color(0xFFD9483A), // oklch(0.62 0.20 25)

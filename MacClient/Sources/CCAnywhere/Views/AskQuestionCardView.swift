@@ -28,22 +28,29 @@ import SwiftUI
 
 // MARK: - 顶层 View
 
+/// Tab 内嵌的 AskQuestion 卡片（用户反馈：原全局弹窗在多 tab 时阻塞所有交互，
+/// 改为按 tab 内嵌底部弹出 — A tab 的卡片不影响 B tab 操作）。
+///
+/// 用法：在 TabContentView 内 ZStack 底部叠加 `AskQuestionCardView(controller:, tabId:)`。
+/// pending == nil 时透明不占空间也不拦截 hit-test；非 nil 时从底部弹出卡片但
+/// **不遮罩整个 tab**（用户可点上方终端区域、切到别的 tab 等）。
 public struct AskQuestionCardView: View {
     @ObservedObject var controller: AskQuestionCardController
+    let tabId: UUID
     @EnvironmentObject var themeManager: ThemeManager
 
-    public init(controller: AskQuestionCardController) {
+    public init(controller: AskQuestionCardController, tabId: UUID) {
         self.controller = controller
+        self.tabId = tabId
     }
 
     public var body: some View {
         let palette = themeManager.palette
-        ZStack(alignment: .top) {
-            if let req = controller.currentRequest {
-                // 半透明遮罩 + 居中卡片
-                Color.black.opacity(0.25)
-                    .ignoresSafeArea()
-                    .transition(.opacity)
+        let pending = controller.pending(forTab: tabId)
+        let answered = controller.answered(forTab: tabId)
+        VStack(spacing: 8) {
+            Spacer(minLength: 0)
+            if let req = pending {
                 CardOverlay(
                     request: req,
                     palette: palette,
@@ -61,23 +68,26 @@ public struct AskQuestionCardView: View {
                         )
                     }
                 )
-                .frame(maxWidth: 480)
-                .padding(.top, 80)
+                .frame(maxWidth: 520)
                 .padding(.horizontal, 16)
-                .transition(.scale(scale: 0.96).combined(with: .opacity))
+                .padding(.bottom, 12)
+                .shadow(color: Color.black.opacity(0.35), radius: 18, y: 6)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-            if let answered = controller.recentlyAnswered {
+            if let info = answered {
                 AnsweredBanner(
-                    info: answered,
+                    info: info,
                     palette: palette,
-                    onClose: { controller.clearAnsweredBadge() }
+                    onClose: { controller.clearAnsweredBadge(forTab: tabId) }
                 )
-                .padding(.top, 24)
-                .transition(.move(edge: .top).combined(with: .opacity))
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: controller.currentRequest?.requestId)
-        .animation(.easeInOut(duration: 0.18), value: controller.recentlyAnswered?.requestId)
+        .animation(.easeInOut(duration: 0.2), value: pending?.requestId)
+        .animation(.easeInOut(duration: 0.2), value: answered?.requestId)
+        .allowsHitTesting(pending != nil || answered != nil)
     }
 }
 

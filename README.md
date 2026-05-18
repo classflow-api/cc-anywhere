@@ -1,59 +1,185 @@
-# cc-anywhere
+<div align="center">
 
-> Copyright (c) 2026 北京友联互动信息技术有限公司. All rights reserved.
+# 遥指 · cc-anywhere
 
-## 项目简介
+**跨端 Claude Code 协作客户端 — Mac 跑长任务，手机随时接管**
 
-cc-anywhere 是一个跨端 Claude Code 协作客户端，通过自有 VPS 桥接 Mac 桌面客户端和 Android 客户端，让你可以：
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![macOS](https://img.shields.io/badge/macOS-14%2B-black?logo=apple)](./MacClient)
+[![Android](https://img.shields.io/badge/Android-12%2B-3DDC84?logo=android&logoColor=white)](./AndroidClient)
+[![Go](https://img.shields.io/badge/Server-Go%201.21%2B-00ADD8?logo=go&logoColor=white)](./Server)
 
-- 在 Mac 上以多 Tab 方式管理多个 Claude Code 会话（每个 Tab 绑定一个本地文件夹，自动启动 `claude -c` 恢复历史对话）
-- 在 Android 手机上以卡片式消息列表实时查看任意 Tab 的对话进展
-- 在手机上输入文字、上传图片继续与 Claude Code 对话
-- 在手机上批准/拒绝 Claude Code 的工具调用请求
+简体中文 ｜ [English](./README.en.md)
 
-适用于"在 Mac 上跑长任务，离开桌面后用手机查看与干预"的个人开发场景。
+</div>
 
-## 项目结构
+---
+
+## 📱 这是什么
+
+**遥指（cc-anywhere）** 让你在 Mac 上跑 [Claude Code](https://claude.com/claude-code) 长任务，同时通过手机端实时跟进、回答提问、批准危险工具调用。
+
+- **场景**：你启动了一个会跑 1 小时的 Claude Code 任务（重构、批量改、研究），走开喝咖啡、上厕所、坐地铁，Claude 中途有问题就在手机上弹卡片让你回答
+- **不是**：另一个 Claude TUI 复刻，不是网页版 Claude.ai，不是商业 SaaS
+- **定位**：个人开发者工具，自托管 + 自有 VPS
+
+## ✨ 核心特性
+
+- 🪟 **Mac 端多 Tab 工作区**：每个 Tab 绑一个本地项目目录，自动 `claude -c` 恢复对话
+- 📲 **手机端结构化卡片**：解析 Claude 的 JSONL 输出为消息流（文本 / 工具调用 / 图片 / 思考），不是 TUI 直接渲染
+- ⚡ **AskUserQuestion 实时桥接**：Claude 提问 → 手机端 < 1 秒弹卡片 → 任一端答都 winner-lock 仲裁
+- 🛡️ **危险工具远程批准**（M4）：Claude 想跑 `rm -rf` / Write / Edit → 推手机批准对话框
+- 🔔 **系统级通知**：即便手机锁屏 / 不在 App 内也能收到震动 + 抬头提醒
+- ⌨️ **手机端文字输入 + 图片上传**：继续对话，跨设备无缝
+- 🪝 **基于 Claude Code 官方 Hook 机制**：不重新实现 SDK，不破坏原生 TUI 体验
+- 🔌 **Dumb Proxy Server**：业务协议两端自定义，Server 只做鉴权 + 设备发现 + 透传，部署一次永久跑
+
+## 📸 截图
+
+> 截图占位（待补）。运行体验：Mac 端类似终端多 Tab + 偏好 + 设备管理；手机端类似 IM 卡片消息列表 + AskUserQuestion 弹层卡片。
+
+| Mac 客户端 | 手机端 |
+|---|---|
+| _（main window screenshot）_ | _（chat screen screenshot）_ |
+| _（ask question card）_ | _（system notification）_ |
+
+## 🏗️ 架构
 
 ```
-cc-anywhere/
-├── docs/              # 需求文档、技术方案、审查报告
-├── MacClient/         # Mac 桌面客户端（Swift + SwiftTerm + PTY）
-├── AndroidClient/     # Android 客户端（Flutter + 卡片消息）
-└── Server/            # 中转服务器（Go + WebSocket）
+┌───────────────────────────────────────────┐
+│  Mac App  (Swift + SwiftUI + SwiftTerm)   │
+│   ├── ProcessHost: 每 Tab 一个 claude 子进程
+│   ├── JSONLWatcher: FSEvents 监听 ~/.claude/projects
+│   ├── HookIpcServer: Unix socket 接 Claude hook
+│   └── WSClient: wss 上行 server
+└───────────────────────────────────────────┘
+                    ↑↓ wss + TLS
+┌───────────────────────────────────────────┐
+│  Server  (Go, "dumb proxy" 哑代理)         │
+│   ├── auth: HMAC + master_token / sub_token
+│   ├── device: phone 设备绑定 + 撤销
+│   ├── image: 临时图片上传/下载中转
+│   ├── presence: mac_online / phone_count 广播
+│   └── router: 业务消息默认透传，加新 type 不需重部
+└───────────────────────────────────────────┘
+                    ↑↓ wss + TLS
+┌───────────────────────────────────────────┐
+│  Android App  (Flutter + Riverpod)        │
+│   ├── ChatRepository: ws → 消息流
+│   ├── AskQuestionController: 实时 ask 卡片
+│   ├── AskNotificationService: 系统通知
+│   └── DedupService: tool_use_id 去重
+└───────────────────────────────────────────┘
 ```
 
-## 开发环境
+详细架构 → [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)
 
-| 端 | 要求 |
-|----|------|
-| MacClient | macOS 13+ / Xcode 15+ / Swift 5.9+ |
-| AndroidClient | Flutter 3.x / Android SDK 33+ |
-| Server | Go 1.21+ / 自有 VPS（任意可绑域名 + TLS 的服务器）|
+## 🚀 快速开始
 
-## 快速开始
+### 三端都跑起来需要
 
-> 各端详细开发指南请参阅对应目录下的 README（开发流程中陆续产出）。
+1. 一台 Mac（macOS 14+）+ 装好 [Claude Code CLI](https://docs.claude.com/claude-code)
+2. 一台 Android 手机（API 29+，Android 10+）或模拟器
+3. 一台 VPS（任意 Linux，支持 Docker 即可，建议域名 + TLS）
 
-整体工作流：
+### 部署 Server（一次性，永久跑）
 
-1. 部署 Server 到 VPS，记下域名、端口、主 Token
-2. 安装 MacClient，在设置页填写 Server 地址 + 端口 + 主 Token 绑定
-3. 在 MacClient 创建第一个 Tab，选择项目文件夹，自动启动 Claude Code
-4. 在 MacClient 设备管理页生成手机绑定 QR 码
-5. 安装 AndroidClient，扫码完成绑定，即可远程查看与对话
+```bash
+# 在 VPS 上
+git clone https://github.com/classflow-api/cc-anywhere.git
+cd cc-anywhere/Server
 
-## 核心设计要点
+# 1. 配置
+cp ../local-deploy/config/config.yaml.example ./config/config.yaml
+# 编辑 config.yaml：把 public_host 改为你的域名:端口
 
-- **无 daemon**：Mac 端单 UI 进程；软件关闭 = 网络断联 + 子进程退出
-- **对话持久化交给 Claude Code 自己**：本地仅保存 Tab 列表，重启用 `claude -c` 自动恢复
-- **手机端是结构化 viewer**：通过监听 Claude Code 的 JSONL 对话日志拿到完美结构化的消息
-- **不用 tmux**：直接系统 PTY，少一层中间层
+# 2. 准备 TLS 证书（Let's Encrypt 或自签）
+# 放进 ./config/tls/cert.pem + ./config/tls/key.pem
 
-更多设计细节见 `CLAUDE.md` 与 `docs/` 内的产品/技术文档。
+# 3. HMAC secret + 启动
+export CC_HMAC_SECRET=$(openssl rand -hex 32)
+echo "CC_HMAC_SECRET=$CC_HMAC_SECRET" > .env
 
-## 许可证
+docker build -t cc-anywhere:latest .
+docker run -d --name cc-anywhere --restart unless-stopped \
+  -p 8443:8443 \
+  -v $PWD/config:/etc/cc-anywhere:ro \
+  -v cc-data:/var/lib/cc-anywhere \
+  --env-file .env -e TZ=Asia/Shanghai \
+  cc-anywhere:latest
 
-Copyright (c) 2026 北京友联互动信息技术有限公司. All rights reserved.
+# 4. 生成 master token（一次，记下来给 Mac App 用）
+docker exec cc-anywhere /usr/local/bin/cc-anywhere admin reset-master-token --force
+```
 
-本项目为公司内部项目，未经授权不得对外分发。
+### 装 Mac 客户端
+
+```bash
+cd MacClient
+bash build_app.sh release
+# 把 .build/遥指.app 拖到 /Applications/
+open '/Applications/遥指.app'
+```
+
+首次启动 → 偏好设置 → Server → 填入 VPS 域名:端口 + 上一步生成的 master token。
+
+### 装 Android 客户端
+
+```bash
+cd AndroidClient
+flutter pub get
+flutter build apk --release
+adb install -r build/app/outputs/flutter-apk/app-release.apk
+```
+
+打开 App → 等 Mac App 主窗口弹设备绑定二维码 → 用手机扫码完成绑定。
+
+完整安装与故障排查 → [docs/INSTALL.md](./docs/INSTALL.md)
+
+## 📖 文档
+
+| 文档 | 内容 |
+|---|---|
+| [docs/INSTALL.md](./docs/INSTALL.md) | 三端详细安装、依赖、TLS 自签、首次绑定 |
+| [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) | 架构原理、Hook 桥接机制、消息协议、dumb proxy 设计 |
+| [docs/FAQ.md](./docs/FAQ.md) | 常见问题 |
+| [docs/AskUserQuestion远程交互/](./docs/AskUserQuestion远程交互/) | AskUserQuestion / Hook 实时桥接 完整开发文档（PRD / 需求 / 技术 / 三轮 Review / 上线研判） |
+| [MacClient/README.md](./MacClient/README.md) | Mac 客户端开发指南 |
+| [AndroidClient/README.md](./AndroidClient/README.md) | Android 客户端开发指南 |
+| [Server/README.md](./Server/README.md) | Server 开发指南 |
+
+## 🛠️ 技术栈
+
+| 端 | 语言 | 框架 | 关键依赖 |
+|---|---|---|---|
+| MacClient | Swift 5.9 | AppKit + SwiftUI | SwiftTerm（系统 PTY）/ Network.framework |
+| AndroidClient | Dart 3.3 | Flutter | Riverpod / flutter_local_notifications / web_socket_channel |
+| Server | Go 1.21 | 标准库 | nhooyr.io/websocket / SQLite |
+| Hook Bridge | Python 3 | macOS 系统预装 `python3` | 仅标库 |
+
+## 🔒 安全
+
+- 所有通信走 TLS（wss）
+- 鉴权用 HMAC-SHA256 + 一次性 master token + 设备绑定 sub_token
+- 不存对话内容到 Server（Server 只是消息路由器）
+- Mac 端 hook 写入 `~/.claude/settings.json` 时**只追加自己的条目**，不影响用户其它 plugin hooks，关闭时精准卸载
+- 漏洞报告：见 [SECURITY.md](./SECURITY.md)
+
+## 🤝 贡献
+
+欢迎 issue 与 PR。贡献前请阅读：
+
+- [CONTRIBUTING.md](./CONTRIBUTING.md) — 开发流程、提交规范、代码风格
+- [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) — 行为准则
+
+本项目大部分代码由 [Claude Code](https://claude.com/claude-code) 协作完成（[完整 L4 开发流程文档](./docs/AskUserQuestion远程交互/) 可供参考）。欢迎用任何方式贡献（包括用 Claude / Cursor / Continue 等 AI 协作工具）。
+
+## 📜 许可证
+
+[MIT License](./LICENSE) © 2026 Beijing Yoolines Interactive Information Technology Co., Ltd. (北京友联互动信息技术有限公司)
+
+## 🙏 致谢
+
+- [Anthropic / Claude Code](https://claude.com/claude-code) — 本项目的底层引擎
+- [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) — Mac 端终端渲染
+- [Flutter](https://flutter.dev) — 跨端 UI 框架

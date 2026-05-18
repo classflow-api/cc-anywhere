@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 import '../data/logger.dart';
 import '../data/ws_client.dart';
 import '../models/protocol_message.dart';
+import 'ask_notification_service.dart';
 
 /// 单个 tab 当前活跃的 ask.question 实时态。
 ///
@@ -53,12 +54,13 @@ class AskQuestionState {
 /// 与 ChatRepository 解耦:它只负责事后模式(JSONL 解析的 toolUse + askUserQuestion 卡片),
 /// 本控制器只负责实时模式。两条通道在 widget 层独立渲染,互不干扰。
 class AskQuestionController {
-  AskQuestionController(this._ws, this._log) {
+  AskQuestionController(this._ws, this._log, this._notifier) {
     _sub = _ws.inbound.listen(_onInbound);
   }
 
   final WsClient _ws;
   final AppLogger _log;
+  final AskNotificationService _notifier;
   final _uuid = const Uuid();
   StreamSubscription<ProtocolMessage>? _sub;
 
@@ -89,6 +91,8 @@ class AskQuestionController {
         if (p == null) return;
         _log.info('AskQuestion', 'pending ${p.requestId} tab=${p.tabId}');
         _update(p.tabId, AskQuestionState(pending: p));
+        // 系统通知（即便 App 不在前台也强提醒）
+        unawaited(_notifier.notifyAskPending(p));
         break;
 
       case ProtocolType.askQuestionAnswered:
@@ -104,6 +108,8 @@ class AskQuestionController {
             'answered ${a.requestId} by=${a.answeredBy} tab=$targetTab');
         final cur = _state[targetTab!] ?? AskQuestionState.empty;
         _update(targetTab!, cur.copyWith(answered: a));
+        // 已答 → 取消系统通知
+        unawaited(_notifier.dismissAsk(a.requestId));
         // 3 秒后自动 dismiss(对齐 Mac 端 recentlyAnswered banner 行为)
         _autoDismissTimers.remove(a.requestId)?.cancel();
         _autoDismissTimers[a.requestId] = Timer(
@@ -125,6 +131,8 @@ class AskQuestionController {
         // 标 timedOut → UI 层取 snapshot 弹 snackbar + 立即清空
         final cur = _state[targetTab!] ?? AskQuestionState.empty;
         _update(targetTab!, cur.copyWith(timedOut: true));
+        // 超时 → 取消系统通知
+        unawaited(_notifier.dismissAsk(t.requestId));
         // 下一个 frame 清空(给 UI 一帧时间读 timedOut 状态弹 snackbar)
         Future<void>.microtask(() => _dismissByRequestId(t.requestId));
         break;
@@ -233,6 +241,7 @@ final askQuestionControllerProvider = Provider<AskQuestionController>((ref) {
   final c = AskQuestionController(
     ref.read(wsClientProvider),
     ref.read(loggerProvider),
+    ref.read(askNotificationServiceProvider),
   );
   ref.onDispose(c.dispose);
   return c;
