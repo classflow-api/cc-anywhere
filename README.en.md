@@ -86,7 +86,7 @@ git clone https://github.com/classflow-api/cc-anywhere.git
 cd cc-anywhere/Server
 
 # 1. Config
-cp ../local-deploy/config/config.yaml.example ./config/config.yaml
+cp config/config.yaml.example config/config.yaml
 # Edit config.yaml — set public_host to your domain:port
 
 # 2. TLS certs (Let's Encrypt or self-signed)

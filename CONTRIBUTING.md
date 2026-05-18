@@ -44,7 +44,7 @@ go build ./...
 go vet ./...
 # 本地运行
 CC_HMAC_SECRET=$(openssl rand -hex 32) \
-  go run ./cmd/cc-anywhere --config ../local-deploy/config/config.yaml
+  go run ./cmd/cc-anywhere --config ./config/config.yaml
 ```
 
 要求：Go 1.21+。

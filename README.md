@@ -90,7 +90,7 @@ git clone https://github.com/classflow-api/cc-anywhere.git
 cd cc-anywhere/Server
 
 # 1. 配置
-cp ../local-deploy/config/config.yaml.example ./config/config.yaml
+cp config/config.yaml.example config/config.yaml
 # 编辑 config.yaml：把 public_host 改为你的域名:端口
 
 # 2. 准备 TLS 证书（Let's Encrypt 或自签）

@@ -136,7 +136,7 @@ docker exec cc-anywhere /usr/local/bin/cc-anywhere admin reset-master-token --fo
 ```bash
 cd Server
 go build -o cc-anywhere ./cmd/cc-anywhere
-CC_HMAC_SECRET=$(openssl rand -hex 32) ./cc-anywhere --config ../local-deploy/config/config.yaml
+CC_HMAC_SECRET=$(openssl rand -hex 32) ./cc-anywhere --config ./config/config.yaml
 ```
 
 适合 ARM 树莓派等不易跑 Docker 的环境。需要 systemd 自启可参考 [Server/README.md](https://github.com/classflow-api/cc-anywhere/blob/master/Server/README.md#systemd)。
