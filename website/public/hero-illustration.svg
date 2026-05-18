@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 360" fill="none">
+  <defs>
+    <linearGradient id="mac" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#1a1d24"/>
+      <stop offset="1" stop-color="#0b0e14"/>
+    </linearGradient>
+    <linearGradient id="phone" x1="0" y1="0" x2="0" y2="1">
+      <stop stop-color="#0b0e14"/>
+      <stop offset="1" stop-color="#1a1d24"/>
+    </linearGradient>
+    <linearGradient id="link" x1="0" y1="0" x2="1" y2="0">
+      <stop stop-color="#59CFE7"/>
+      <stop offset="1" stop-color="#4F7BE6"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- background -->
+  <rect width="480" height="360" fill="transparent"/>
+
+  <!-- Mac terminal window -->
+  <g transform="translate(40, 80)">
+    <rect width="220" height="160" rx="12" fill="url(#mac)" stroke="#2a2f3a" stroke-width="1"/>
+    <!-- title bar -->
+    <circle cx="14" cy="14" r="5" fill="#ff5f56"/>
+    <circle cx="32" cy="14" r="5" fill="#ffbd2e"/>
+    <circle cx="50" cy="14" r="5" fill="#27c93f"/>
+    <text x="110" y="18" text-anchor="middle" font-family="system-ui,sans-serif" font-size="10" fill="#5a6172">遥指 · BJYQ</text>
+    <!-- terminal content -->
+    <rect x="14" y="34" width="192" height="2" rx="1" fill="#3a4050"/>
+    <text x="14" y="58" font-family="ui-monospace,monospace" font-size="9" fill="#9098A8">$ claude -c</text>
+    <text x="14" y="76" font-family="ui-monospace,monospace" font-size="9" fill="#59CFE7">▸ 思考中... 1m23s</text>
+    <text x="14" y="94" font-family="ui-monospace,monospace" font-size="9" fill="#9098A8">▸ 使用工具: Read /docs/...</text>
+    <text x="14" y="112" font-family="ui-monospace,monospace" font-size="9" fill="#9098A8">▸ 调用 AskUserQuestion...</text>
+    <text x="14" y="138" font-family="ui-monospace,monospace" font-size="9" fill="#52DBA5" filter="url(#glow)">✓ 已通过手机回答</text>
+  </g>
+
+  <!-- bridge / link beam -->
+  <g>
+    <path d="M 265 160 Q 290 130 320 160 Q 290 190 265 160 Z" fill="none" stroke="url(#link)" stroke-width="2" stroke-dasharray="4 4" opacity="0.7"/>
+    <text x="290" y="150" text-anchor="middle" font-family="system-ui,sans-serif" font-size="8" fill="#59CFE7" filter="url(#glow)">wss + TLS</text>
+    <text x="290" y="178" text-anchor="middle" font-family="system-ui,sans-serif" font-size="7" fill="#9098A8">dumb proxy</text>
+  </g>
+
+  <!-- Phone -->
+  <g transform="translate(330, 60)">
+    <rect width="110" height="200" rx="14" fill="url(#phone)" stroke="#2a2f3a" stroke-width="1"/>
+    <rect x="35" y="6" width="40" height="4" rx="2" fill="#2a2f3a"/>
+    <!-- header -->
+    <text x="55" y="30" text-anchor="middle" font-family="system-ui,sans-serif" font-size="8" fill="#9098A8">BJYQ</text>
+    <!-- message -->
+    <rect x="10" y="42" width="80" height="32" rx="8" fill="#1a1d24"/>
+    <text x="14" y="55" font-family="system-ui,sans-serif" font-size="7" fill="#cbd5e1">Claude 提问</text>
+    <text x="14" y="68" font-family="system-ui,sans-serif" font-size="6" fill="#9098A8">你喜欢什么颜色?</text>
+    <!-- ask question card (highlight) -->
+    <rect x="6" y="86" width="98" height="98" rx="10" fill="#0b0e14" stroke="#59CFE7" stroke-width="1.5" filter="url(#glow)"/>
+    <text x="14" y="100" font-family="system-ui,sans-serif" font-size="7" fill="#59CFE7" font-weight="bold">Claude 提问</text>
+    <text x="14" y="116" font-family="system-ui,sans-serif" font-size="6.5" fill="#cbd5e1">你最喜欢什么颜色?</text>
+    <rect x="12" y="124" width="86" height="13" rx="3" fill="#1a1d24"/>
+    <text x="16" y="133" font-family="system-ui,sans-serif" font-size="6" fill="#cbd5e1">蓝色</text>
+    <rect x="12" y="140" width="86" height="13" rx="3" fill="#1a1d24"/>
+    <text x="16" y="149" font-family="system-ui,sans-serif" font-size="6" fill="#cbd5e1">红色</text>
+    <rect x="12" y="156" width="86" height="13" rx="3" fill="#1a1d24"/>
+    <text x="16" y="165" font-family="system-ui,sans-serif" font-size="6" fill="#cbd5e1">自定义回答…</text>
+  </g>
+</svg>
