@@ -250,6 +250,27 @@ OrbStack 默认会 idle suspend docker engine。改设置：
 
 生产 VPS 用纯 docker daemon（systemd 管理）不会有此问题。
 
+### 启动报 `open /etc/cc-anywhere/tls/cert.pem: no such file or directory`
+
+`config.yaml` 里的 `/etc/cc-anywhere/tls/cert.pem` 是**容器内**路径，不是 host 上的真实文件夹。
+
+Docker 通过 `-v $PWD/config:/etc/cc-anywhere:ro` 把 host 上的 `config/` 挂载到容器内 `/etc/cc-anywhere/`，所以：
+
+| 容器内（config.yaml 写的） | Host 上（你 mkdir + 放文件的地方） |
+|---|---|
+| `/etc/cc-anywhere/tls/cert.pem` | `Server/config/tls/cert.pem` |
+| `/etc/cc-anywhere/tls/key.pem` | `Server/config/tls/key.pem` |
+
+正解：把 TLS 证书放到 host 上的 `Server/config/tls/`，**不要**改 config.yaml 里的容器路径。
+
+诊断命令：
+
+```bash
+ls -la ~/cc-anywhere/Server/config/tls/        # host 上证书是否存在
+docker exec cc-anywhere ls /etc/cc-anywhere/tls/  # 容器内是否能看到
+docker inspect cc-anywhere --format '{{range .Mounts}}{{.Source}} → {{.Destination}}{{println}}{{end}}'
+```
+
 ### docker build 拉镜像失败（国内 VPS 常见）
 
 报错形如：

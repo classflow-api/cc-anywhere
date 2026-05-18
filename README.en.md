@@ -91,7 +91,9 @@ nano config/config.yaml         # set public_host to your domain:port
 
 # 2. TLS certs (Let's Encrypt or self-signed)
 mkdir -p config/tls
-# Place cert/key at config/tls/cert.pem and config/tls/key.pem
+# Place cert/key at HOST path: config/tls/cert.pem and config/tls/key.pem
+# config.yaml's /etc/cc-anywhere/tls/... is a CONTAINER path — DO NOT change it
+# Docker maps host ./config/ ⟷ container /etc/cc-anywhere/, see table below
 
 # 3. HMAC secret
 export CC_HMAC_SECRET=$(openssl rand -hex 32)
@@ -111,6 +113,19 @@ docker run -d --name cc-anywhere --restart unless-stopped \
 # 6. Generate master token (once)
 docker exec cc-anywhere /usr/local/bin/cc-anywhere admin reset-master-token --force
 ```
+
+> 📁 **Docker volume mapping cheat sheet** (avoid TLS-not-found pitfall):
+>
+> Paths in `config.yaml` are **container-side** views. Host ↔ container map:
+>
+> | Container path (in config.yaml)        | Host path (where you put files)             |
+> |---|---|
+> | `/etc/cc-anywhere/config.yaml`         | `~/cc-anywhere/Server/config/config.yaml`   |
+> | `/etc/cc-anywhere/tls/cert.pem`        | `~/cc-anywhere/Server/config/tls/cert.pem`  |
+> | `/etc/cc-anywhere/tls/key.pem`         | `~/cc-anywhere/Server/config/tls/key.pem`   |
+> | `/var/lib/cc-anywhere/cc-anywhere.db`  | docker named volume `cc-data`               |
+>
+> ⚠️ **Common pitfall**: putting TLS certs at host's `/etc/cc-anywhere/tls/` (real system dir) — docker doesn't see them. Put them under `Server/config/tls/`.
 
 ### Install the Mac client
 

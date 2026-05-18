@@ -84,6 +84,21 @@ docker exec cc-anywhere /usr/local/bin/cc-anywhere admin reset-master-token --fo
 
 把输出的 master token **立即记下**（不会再显示第二次）。
 
+::: warning ⚠️ Docker 卷挂载对照表（防 TLS 找不到）
+
+`config.yaml` 里的路径是**容器内**视角。host ↔ container 映射：
+
+| 容器内（config.yaml 写的） | Host 上（你 mkdir / 放文件） |
+|---|---|
+| `/etc/cc-anywhere/config.yaml` | `Server/config/config.yaml` |
+| `/etc/cc-anywhere/tls/cert.pem` | `Server/config/tls/cert.pem` |
+| `/etc/cc-anywhere/tls/key.pem` | `Server/config/tls/key.pem` |
+| `/var/lib/cc-anywhere/cc-anywhere.db` | docker named volume `cc-data` |
+
+把 TLS 证书放到 host 上 `Server/config/tls/`，**不要**碰 config.yaml 里的容器路径。
+
+:::
+
 ## 2. Mac 客户端（10 分钟）
 
 ```bash

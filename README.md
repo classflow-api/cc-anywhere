@@ -95,7 +95,9 @@ nano config/config.yaml         # 把 public_host 改为你的域名:端口
 
 # 2. 准备 TLS 证书（Let's Encrypt 或自签）
 mkdir -p config/tls
-# 把 cert + key 放进 config/tls/cert.pem 和 config/tls/key.pem
+# 把 cert + key 放进 host 上的 config/tls/cert.pem 和 config/tls/key.pem
+# config.yaml 里写的 /etc/cc-anywhere/tls/... 是容器内路径，**不要改**
+# Docker 挂载 host 的 ./config/ 到容器内 /etc/cc-anywhere/，详见下方说明
 
 # 3. HMAC secret
 export CC_HMAC_SECRET=$(openssl rand -hex 32)
@@ -115,6 +117,22 @@ docker run -d --name cc-anywhere --restart unless-stopped \
 # 6. 生成 master token（一次，记下来给 Mac App 用）
 docker exec cc-anywhere /usr/local/bin/cc-anywhere admin reset-master-token --force
 ```
+
+::: details 📁 Docker 卷挂载对照表（必看 — 防止 TLS 找不到）
+
+`config.yaml` 里的路径是**容器内**视角，跟 host 上的真实文件夹通过 `-v` 映射：
+
+| 容器内（config.yaml 写的） | Host 上（你 mkdir / 放文件的位置） | 映射方式 |
+|---|---|---|
+| `/etc/cc-anywhere/config.yaml` | `~/cc-anywhere/Server/config/config.yaml` | `-v $PWD/config:/etc/cc-anywhere:ro` |
+| `/etc/cc-anywhere/tls/cert.pem` | `~/cc-anywhere/Server/config/tls/cert.pem` | 同上 |
+| `/etc/cc-anywhere/tls/key.pem` | `~/cc-anywhere/Server/config/tls/key.pem` | 同上 |
+| `/var/lib/cc-anywhere/cc-anywhere.db` | `<docker named volume cc-data>` | `-v cc-data:/var/lib/cc-anywhere` |
+| `/var/lib/cc-anywhere/inbox/` | 同上（named volume） | 同上 |
+
+⚠️ **常见踩坑**：把 TLS 证书放到 host 上的 `/etc/cc-anywhere/tls/`（系统目录） — 那是 docker daemon 看不到的地方。正解是放在 `Server/config/tls/` 下。
+
+:::
 
 ### 装 Mac 客户端
 

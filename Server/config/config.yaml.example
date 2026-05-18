@@ -1,19 +1,42 @@
+# cc-anywhere Server 配置文件
+#
+# ⚠️ 重要：下面所有路径（cert_file / key_file / db.path / image.inbox_dir）都是
+#    **容器内**路径（docker 容器看到的文件系统），不是 host 上的真实文件夹。
+#    Docker 通过 -v 挂载把 host 上的目录映射进容器：
+#
+#      docker run 参数                         host 路径             容器内路径
+#      -v $PWD/config:/etc/cc-anywhere:ro   ./config/         ⟷   /etc/cc-anywhere/
+#      -v cc-data:/var/lib/cc-anywhere      <docker volume>   ⟷   /var/lib/cc-anywhere/
+#
+#    实际操作：
+#      把 TLS 证书放到 host 上的 ./config/tls/cert.pem 即可，容器里看到的就是
+#      /etc/cc-anywhere/tls/cert.pem（下面这两行路径**不要改**，要改就改 docker
+#      挂载的 host 路径）。
+#
+# ─────────────────────────────────────────────────────────────────────────
+
 server:
-  # WebSocket + HTTP listen address.
+  # WebSocket + HTTPS 监听地址（容器内端口；docker run -p 8443:8443 暴露到 host）
   address: "0.0.0.0:8443"
+
+  # TLS 证书路径 — 容器内视角
+  # 等同于 host 上的 ./config/tls/cert.pem 和 ./config/tls/key.pem
   tls:
     cert_file: "/etc/cc-anywhere/tls/cert.pem"
     key_file: "/etc/cc-anywhere/tls/key.pem"
-  # Host (or host:port) used when composing absolute image upload/download URLs
-  # delivered to clients. Must be reachable from both Mac and phones.
+
+  # 客户端连接时用的地址 — 改成你 VPS 的域名 / IP + 端口
+  # Mac App 和手机端都要能从公网访问这个地址
   public_host: "cc.example.com:8443"
 
 db:
+  # SQLite DB 路径 — 容器内视角；host 上对应 docker named volume "cc-data"
   path: "/var/lib/cc-anywhere/cc-anywhere.db"
 
 image:
+  # 临时图片上传目录 — 同上，在 cc-data named volume 里
   inbox_dir: "/var/lib/cc-anywhere/inbox"
-  # Injected from environment so the secret never sits in the file.
+  # HMAC secret 来自环境变量（docker run --env-file .env），不应明文写在文件里
   hmac_secret: "${CC_HMAC_SECRET}"
 
 log:
