@@ -18,7 +18,7 @@
 ssh root@your-vps
 
 git clone https://github.com/classflow-api/cc-anywhere.git
-cd cc-anywhere/Server
+cd cc-anywhere/Server          # ← 后续 docker build / run 都在 Server/ 目录下
 
 mkdir -p /opt/cc-anywhere/{config,tls}
 
@@ -56,7 +56,7 @@ docker exec cc-anywhere /usr/local/bin/cc-anywhere admin reset-master-token --fo
 
 ```bash [本机 Docker / 局域网测试]
 git clone https://github.com/classflow-api/cc-anywhere.git
-cd cc-anywhere/Server
+cd cc-anywhere/Server          # ← 后续 docker build / run 都在 Server/ 目录下
 
 mkdir -p ~/cc-anywhere-data/{config,tls}
 

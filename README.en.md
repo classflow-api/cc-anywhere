@@ -83,20 +83,24 @@ Deep dive → [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)
 ```bash
 # on your VPS
 git clone https://github.com/classflow-api/cc-anywhere.git
-cd cc-anywhere/Server
+cd cc-anywhere/Server          # ← all following commands run from Server/
 
 # 1. Config
 cp config/config.yaml.example config/config.yaml
-# Edit config.yaml — set public_host to your domain:port
+nano config/config.yaml         # set public_host to your domain:port
 
 # 2. TLS certs (Let's Encrypt or self-signed)
-# Place them at ./config/tls/{cert,key}.pem
+mkdir -p config/tls
+# Place cert/key at config/tls/cert.pem and config/tls/key.pem
 
-# 3. HMAC secret + run
+# 3. HMAC secret
 export CC_HMAC_SECRET=$(openssl rand -hex 32)
 echo "CC_HMAC_SECRET=$CC_HMAC_SECRET" > .env
 
+# 4. Build the image (cwd must be Server/, which contains the Dockerfile)
 docker build -t cc-anywhere:latest .
+
+# 5. Run
 docker run -d --name cc-anywhere --restart unless-stopped \
   -p 8443:8443 \
   -v $PWD/config:/etc/cc-anywhere:ro \
@@ -104,7 +108,7 @@ docker run -d --name cc-anywhere --restart unless-stopped \
   --env-file .env -e TZ=Asia/Shanghai \
   cc-anywhere:latest
 
-# 4. Generate master token (once)
+# 6. Generate master token (once)
 docker exec cc-anywhere /usr/local/bin/cc-anywhere admin reset-master-token --force
 ```
 

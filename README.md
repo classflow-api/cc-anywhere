@@ -87,20 +87,24 @@
 ```bash
 # 在 VPS 上
 git clone https://github.com/classflow-api/cc-anywhere.git
-cd cc-anywhere/Server
+cd cc-anywhere/Server          # ← 后续命令都在 Server/ 目录下运行
 
 # 1. 配置
 cp config/config.yaml.example config/config.yaml
-# 编辑 config.yaml：把 public_host 改为你的域名:端口
+nano config/config.yaml         # 把 public_host 改为你的域名:端口
 
 # 2. 准备 TLS 证书（Let's Encrypt 或自签）
-# 放进 ./config/tls/cert.pem + ./config/tls/key.pem
+mkdir -p config/tls
+# 把 cert + key 放进 config/tls/cert.pem 和 config/tls/key.pem
 
-# 3. HMAC secret + 启动
+# 3. HMAC secret
 export CC_HMAC_SECRET=$(openssl rand -hex 32)
 echo "CC_HMAC_SECRET=$CC_HMAC_SECRET" > .env
 
+# 4. 构建镜像（确保此时 cwd 是 Server/，含 Dockerfile）
 docker build -t cc-anywhere:latest .
+
+# 5. 启动容器
 docker run -d --name cc-anywhere --restart unless-stopped \
   -p 8443:8443 \
   -v $PWD/config:/etc/cc-anywhere:ro \
@@ -108,7 +112,7 @@ docker run -d --name cc-anywhere --restart unless-stopped \
   --env-file .env -e TZ=Asia/Shanghai \
   cc-anywhere:latest
 
-# 4. 生成 master token（一次，记下来给 Mac App 用）
+# 6. 生成 master token（一次，记下来给 Mac App 用）
 docker exec cc-anywhere /usr/local/bin/cc-anywhere admin reset-master-token --force
 ```
 
