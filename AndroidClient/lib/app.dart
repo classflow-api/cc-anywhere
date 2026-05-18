@@ -5,6 +5,8 @@ import 'data/auth_repository.dart';
 import 'data/logger.dart';
 import 'data/ws_client.dart';
 import 'routes/app_router.dart';
+import 'services/ask_notification_service.dart';
+import 'services/ask_question_controller.dart';
 import 'theme/theme_data.dart';
 import 'theme/theme_provider.dart';
 import 'widgets/notification_toast.dart';
@@ -45,6 +47,13 @@ class _CcAnywhereAppState extends ConsumerState<CcAnywhereApp> {
     final mode = ref.watch(themeModeProvider);
     // 启动 toast service —— 触发 ws inbound 监听
     ref.watch(notificationToastServiceProvider);
+    // Eager 创建 AskQuestionController + NotificationService — 这两个 Provider
+    // 是 lazy 的，如果用户进入 chat_screen 之前没人 read/watch 它们，它们就
+    // 不订阅 ws inbound，期间 Mac 推过来的 ask.question.pending 事件会丢失：
+    // 既不弹系统通知，也不更新 state（用户后来进 chat 也看不到卡片）。
+    // 在 App 顶层 eager 创建，让它们随 App 启动一起监听 ws。
+    ref.watch(askQuestionControllerProvider);
+    ref.watch(askNotificationServiceProvider);
     return MaterialApp.router(
       title: 'cc-anywhere',
       debugShowCheckedModeBanner: false,
