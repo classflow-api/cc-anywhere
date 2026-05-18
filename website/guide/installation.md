@@ -250,6 +250,35 @@ OrbStack 默认会 idle suspend docker engine。改设置：
 
 生产 VPS 用纯 docker daemon（systemd 管理）不会有此问题。
 
+### docker build 拉镜像失败（国内 VPS 常见）
+
+报错形如：
+```
+failed to copy: httpReadSeeker: failed open:
+could not fetch content descriptor sha256:xxx
+(application/vnd.oci.image.layer.v1.tar+gzip) from remote: not found
+```
+
+国内 VPS 与 Docker Hub 之间偶发丢包导致。配镜像加速：
+
+```bash
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json <<'EOF'
+{
+  "registry-mirrors": [
+    "https://docker.m.daocloud.io",
+    "https://dockerproxy.com",
+    "https://docker.nju.edu.cn",
+    "https://docker.1panel.live"
+  ]
+}
+EOF
+sudo systemctl restart docker
+docker build -t cc-anywhere:latest .
+```
+
+或者预先 `docker pull golang:1.22-alpine && docker pull alpine:3.19`，再 build 走本地缓存。
+
 ## 更新
 
 ```bash
