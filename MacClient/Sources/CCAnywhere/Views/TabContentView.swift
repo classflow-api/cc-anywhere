@@ -105,7 +105,7 @@ struct TabContentView: View {
                 Spacer()
                 StatusPill(palette: palette, dotColor: dotColor(palette), accent: tab.status == .running) {
                     HStack(spacing: 4) {
-                        Text("session").font(AppFont.ui(size: 11.5, weight: .semibold)).foregroundColor(palette.text)
+                        Text(activityLabel()).font(AppFont.ui(size: 11.5, weight: .semibold)).foregroundColor(palette.text)
                         Text("·").foregroundColor(palette.textFaint)
                         Text(tab.id.uuidString.prefix(8))
                             .font(AppFont.mono(size: 11.5))
@@ -155,9 +155,20 @@ struct TabContentView: View {
 
     private func dotColor(_ palette: ColorPalette) -> SwiftUI.Color {
         switch tab.status {
-        case .running: return palette.success
         case .error:   return palette.danger
         case .idle:    return palette.textFaint
+        case .running:
+            // 进程在跑时根据 Claude 活动状态二次区分
+            // working → 黄色（busy）；waiting → 绿色（ready）
+            return tab.activity == .working ? palette.warn : palette.success
+        }
+    }
+
+    private func activityLabel() -> String {
+        switch tab.status {
+        case .idle:    return "未启动"
+        case .error:   return "错误"
+        case .running: return tab.activity == .working ? "工作中" : "等待中"
         }
     }
 

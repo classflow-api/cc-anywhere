@@ -133,6 +133,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 key: ValueKey('ask_realtime_${askPending.requestId}'),
                 payload: askPending,
                 answered: askState.answered,
+                // L4 R-F6：传递队列总长，N>=2 时卡片顶部显示 "1/N 待审批"
+                queueCount: askState.queueCount,
                 onSubmit: (answers) {
                   ref
                       .read(askQuestionControllerProvider)

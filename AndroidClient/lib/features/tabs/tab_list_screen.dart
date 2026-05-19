@@ -265,6 +265,21 @@ class _TabCard extends StatelessWidget {
     final t = context.tokens;
     final running = tab.claudeStatus == ClaudeStatus.running;
     final errored = tab.claudeStatus == ClaudeStatus.error || tab.errorState;
+    final working = running && tab.activity == ClaudeActivity.working;
+
+    // 点颜色：error 红 / working 黄（busy）/ waiting / running 绿 / 其它灰
+    final Color dotColor = errored
+        ? t.danger
+        : working
+            ? t.warn
+            : running
+                ? t.success
+                : t.textFaint;
+    final String? activityLabel = errored
+        ? null  // 错误状态由别处的红色提示展示
+        : running
+            ? (working ? '工作中' : '等待中')
+            : null;
 
     final card = Stack(
       children: [
@@ -292,24 +307,34 @@ class _TabCard extends StatelessWidget {
               Row(
                 children: [
                   PulseDot(
-                    color: running
-                        ? t.success
-                        : errored
-                            ? t.danger
-                            : t.textFaint,
+                    color: dotColor,
                     size: 8,
-                    pulse: running && emphasize,
+                    pulse: working,  // 只在 working 状态下脉冲，提示用户 Claude 正在干活
                   ),
                   const SizedBox(width: 10),
                   Expanded(
-                    child: Text(
-                      tab.name,
-                      style: TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: t.text,
-                      ),
-                      overflow: TextOverflow.ellipsis,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          tab.name,
+                          style: TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: t.text,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        if (activityLabel != null)
+                          Text(
+                            activityLabel,
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w500,
+                              color: working ? t.warn : t.textMuted,
+                            ),
+                          ),
+                      ],
                     ),
                   ),
                   if (tab.pendingToolUse) _ToolBadge(),

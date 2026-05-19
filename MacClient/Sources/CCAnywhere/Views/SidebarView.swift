@@ -46,6 +46,16 @@ struct SidebarView: View {
                         tabManager.clearUnread(tab.id)
                     }
                     .contextMenu {
+                        Button("重命名…") { startRename(tab) }
+                        Menu("权限模式") {
+                            ForEach(PermissionMode.allCases, id: \.self) { m in
+                                // contextMenu 子菜单上 Label+systemImage 在 macOS 14 渲染
+                                // 不稳定，改用纯文本前缀 "✓ " 保证当前模式始终可见。
+                                Button(m == tab.permissionMode ? "✓ \(m.displayName)" : "  \(m.displayName)") {
+                                    changePermissionMode(tab, to: m)
+                                }
+                            }
+                        }
                         Button("在 Finder 中显示") {
                             NSWorkspace.shared.activateFileViewerSelecting([tab.folder])
                         }
@@ -121,21 +131,55 @@ struct SidebarView: View {
         panel.title = "选择项目文件夹"
         panel.prompt = "打开"
         panel.message = "选择一个文件夹以创建新的工作区"
-        if panel.runModal() == .OK, let url = panel.url {
-            do {
-                let name = url.lastPathComponent
-                let tab = try tabManager.createTab(folder: url, name: name)
-                processHost.startProcess(for: tab)
-                tabManager.selectedTabId = tab.id
-            } catch {
-                let alert = NSAlert()
-                alert.messageText = "无法创建工作区"
-                alert.informativeText = (error as? LocalizedError)?.errorDescription
-                    ?? error.localizedDescription
-                alert.alertStyle = .warning
-                alert.addButton(withTitle: "确定")
-                alert.runModal()
-            }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let mode = TabUIHelpers.askPermissionMode(prompt: "为工作区「\(url.lastPathComponent)」选择 Claude Code 权限模式")
+        else { return }  // 用户取消
+        do {
+            let name = url.lastPathComponent
+            let tab = try tabManager.createTab(folder: url, name: name, permissionMode: mode)
+            processHost.startProcess(for: tab)
+            tabManager.selectedTabId = tab.id
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "无法创建工作区"
+            alert.informativeText = (error as? LocalizedError)?.errorDescription
+                ?? error.localizedDescription
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "确定")
+            alert.runModal()
+        }
+    }
+
+    /// 修改 tab 的 permission mode：弹确认 → 改 model → 重启 claude 子进程。
+    private func changePermissionMode(_ tab: Tab, to mode: PermissionMode) {
+        guard tab.permissionMode != mode else { return }
+        let alert = NSAlert()
+        alert.messageText = "切换权限模式"
+        alert.informativeText = "将把工作区「\(tab.name)」的权限模式从 \(tab.permissionMode.rawValue) 改为 \(mode.rawValue)。\n这会重启 Claude 子进程（对话历史已自动保存，会用 -c 恢复）。继续？"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "切换并重启")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard let updated = tabManager.setPermissionMode(tab.id, mode) else { return }
+        // ProcessHost.stopProcess 内部同步从 terminalsByTab 移除（PTY 真退出是异步，
+        // 但字典已清），可以立刻 startProcess。原先 200ms 延迟在快速连续切换时反而
+        // 引入 model/进程不一致竞态（R2 中危），去掉更稳。
+        processHost.stopProcess(for: updated.id)
+        processHost.startProcess(for: updated)
+    }
+
+    private func startRename(_ tab: Tab) {
+        let alert = NSAlert()
+        alert.messageText = "重命名工作区"
+        alert.informativeText = "留空可恢复为默认名（\(tab.folder.lastPathComponent)）"
+        alert.alertStyle = .informational
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        input.stringValue = tab.name
+        alert.accessoryView = input
+        alert.addButton(withTitle: "确定")
+        alert.addButton(withTitle: "取消")
+        if alert.runModal() == .alertFirstButtonReturn {
+            try? tabManager.renameTab(tab.id, to: input.stringValue)
         }
     }
 
@@ -246,12 +290,20 @@ private struct WorkspaceRow: View {
                     .offset(x: -8)
             }
             HStack(spacing: 8) {
-                PulseDot(color: tab.status == .running ? palette.success : palette.textFaint,
-                         size: 6, pulse: tab.status == .running && isActive)
-                Text(tab.name)
-                    .font(AppFont.ui(size: 12, weight: isActive ? .semibold : .medium))
-                    .foregroundColor(isActive ? palette.accent : palette.text)
-                    .lineLimit(1)
+                PulseDot(color: dotColor(palette),
+                         size: 6,
+                         pulse: tab.status == .running && tab.activity == .working)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(tab.name)
+                        .font(AppFont.ui(size: 12, weight: isActive ? .semibold : .medium))
+                        .foregroundColor(isActive ? palette.accent : palette.text)
+                        .lineLimit(1)
+                    if tab.status == .running {
+                        Text(tab.activity == .working ? "工作中" : "等待中")
+                            .font(AppFont.ui(size: 9.5))
+                            .foregroundColor(palette.textFaint)
+                    }
+                }
                 Spacer()
                 if tab.unread > 0 {
                     Text("\(tab.unread)")
@@ -264,6 +316,15 @@ private struct WorkspaceRow: View {
                 RoundedRectangle(cornerRadius: 7)
                     .fill(isActive ? palette.accentSoft : Color.clear)
             )
+        }
+    }
+
+    private func dotColor(_ palette: ColorPalette) -> SwiftUI.Color {
+        switch tab.status {
+        case .error:   return palette.danger
+        case .idle:    return palette.textFaint
+        case .running:
+            return tab.activity == .working ? palette.warn : palette.success
         }
     }
 }

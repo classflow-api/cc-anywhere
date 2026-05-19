@@ -1,6 +1,19 @@
 /// Tab/会话模型 — 与 Mac 端 `tabs.json` 对齐
 enum ClaudeStatus { running, idle, error, unknown }
 
+/// Claude 在该 Tab 内的活动状态（独立于 PTY 进程状态）。
+/// working = Claude 在思考/调工具；waiting = Claude 等待用户输入。
+enum ClaudeActivity { working, waiting }
+
+ClaudeActivity parseClaudeActivity(String? s) {
+  switch (s) {
+    case 'working':
+      return ClaudeActivity.working;
+    default:
+      return ClaudeActivity.waiting;
+  }
+}
+
 ClaudeStatus parseClaudeStatus(String? s) {
   switch (s) {
     case 'running':
@@ -19,6 +32,9 @@ class TabInfo {
   final String name;
   final String folder;
   final ClaudeStatus claudeStatus;
+  /// Claude 活动状态（working / waiting）。默认 waiting。
+  /// 由 Mac 端 hook 桥接驱动，通过 `tab.activity` 协议消息推送变化。
+  final ClaudeActivity activity;
   final DateTime? lastActivityAt;
   final int unreadCount;
   final bool pendingToolUse;
@@ -30,6 +46,7 @@ class TabInfo {
     required this.name,
     required this.folder,
     required this.claudeStatus,
+    this.activity = ClaudeActivity.waiting,
     this.lastActivityAt,
     this.unreadCount = 0,
     this.pendingToolUse = false,
@@ -42,6 +59,7 @@ class TabInfo {
     String? name,
     String? folder,
     ClaudeStatus? claudeStatus,
+    ClaudeActivity? activity,
     DateTime? lastActivityAt,
     int? unreadCount,
     bool? pendingToolUse,
@@ -53,6 +71,7 @@ class TabInfo {
         name: name ?? this.name,
         folder: folder ?? this.folder,
         claudeStatus: claudeStatus ?? this.claudeStatus,
+        activity: activity ?? this.activity,
         lastActivityAt: lastActivityAt ?? this.lastActivityAt,
         unreadCount: unreadCount ?? this.unreadCount,
         pendingToolUse: pendingToolUse ?? this.pendingToolUse,

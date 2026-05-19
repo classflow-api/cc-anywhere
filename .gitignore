@@ -21,17 +21,16 @@ local-deploy/
 # 工作日报（开发者个人记录，不入开源仓）
 docs/daily/
 
-# 临时调试脚本 / Claude Code 上下文缓存
+# 临时调试脚本
 /tmp/
 *.log
-.claude/projects/
 
 # build_app.sh 临时产物
 MacClient/.build/遥指.app
 MacClient/.build/CCAnywhere.app
 
-# Claude Code 本地用户偏好(Skill 权限授权等)
-.claude/settings.local.json
+# Claude Code 本地工具产物（settings.local.json / scheduled_tasks.lock / projects 缓存 等）
+.claude/
 
 # === MacClient (Swift / Xcode / SPM) ===
 MacClient/build/

@@ -24,6 +24,13 @@ struct TabStripView: View {
                             }
                             .contextMenu {
                                 Button("重命名…") { startRename(tab) }
+                                Menu("权限模式") {
+                                    ForEach(PermissionMode.allCases, id: \.self) { m in
+                                        Button(m == tab.permissionMode ? "✓ \(m.displayName)" : "  \(m.displayName)") {
+                                            changePermissionMode(tab, to: m)
+                                        }
+                                    }
+                                }
                                 Button("在 Finder 中显示") {
                                     NSWorkspace.shared.activateFileViewerSelecting([tab.folder])
                                 }
@@ -71,21 +78,37 @@ struct TabStripView: View {
         panel.title = "选择项目文件夹"
         panel.prompt = "打开"
         panel.message = "选择一个文件夹以创建新的 Claude Code Tab"
-        if panel.runModal() == .OK, let url = panel.url {
-            do {
-                let name = url.lastPathComponent
-                let tab = try tabManager.createTab(folder: url, name: name)
-                processHost.startProcess(for: tab)
-            } catch {
-                let alert = NSAlert()
-                alert.messageText = "无法创建 Tab"
-                alert.informativeText = (error as? LocalizedError)?.errorDescription
-                    ?? error.localizedDescription
-                alert.alertStyle = .warning
-                alert.addButton(withTitle: "确定")
-                alert.runModal()
-            }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let mode = TabUIHelpers.askPermissionMode(prompt: "为工作区「\(url.lastPathComponent)」选择 Claude Code 权限模式")
+        else { return }
+        do {
+            let name = url.lastPathComponent
+            let tab = try tabManager.createTab(folder: url, name: name, permissionMode: mode)
+            processHost.startProcess(for: tab)
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "无法创建 Tab"
+            alert.informativeText = (error as? LocalizedError)?.errorDescription
+                ?? error.localizedDescription
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "确定")
+            alert.runModal()
         }
+    }
+
+    /// 修改 tab 的 permission mode：弹确认 → 改 model → 重启 claude 子进程。
+    private func changePermissionMode(_ tab: Tab, to mode: PermissionMode) {
+        guard tab.permissionMode != mode else { return }
+        let alert = NSAlert()
+        alert.messageText = "切换权限模式"
+        alert.informativeText = "将把工作区「\(tab.name)」的权限模式从 \(tab.permissionMode.rawValue) 改为 \(mode.rawValue)。\n这会重启 Claude 子进程（对话历史已自动保存，会用 -c 恢复）。继续？"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "切换并重启")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard let updated = tabManager.setPermissionMode(tab.id, mode) else { return }
+        processHost.stopProcess(for: updated.id)
+        processHost.startProcess(for: updated)
     }
 
     private func startRename(_ tab: Tab) {

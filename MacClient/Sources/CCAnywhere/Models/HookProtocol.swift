@@ -132,6 +132,15 @@ public protocol HookIpcWsSink: AnyObject {
     func sendToolProgressPre(_ payload: ToolProgressPrePayload)
     func sendToolProgressPost(_ payload: ToolProgressPostPayload)
     func sendNotification(_ payload: NotificationPayload)
+    func sendTabActivity(_ payload: TabActivityPayload)
+}
+
+/// HookIpcServer 用来上报 Tab 活动状态变化（working / waiting）的窄接口。
+/// 由 DependencyContainer 实现，把变化路由到 TabManager + ws 推送。
+@MainActor
+public protocol HookIpcActivitySink: AnyObject {
+    /// 报告某 tab 的 Claude 活动状态。如果状态变化了 → 推 phone；不变则无操作。
+    func setActivity(tabId: UUID, activity: String)
 }
 
 /// HookIpcServer 用来校验 / 解析 tab_id 的窄接口。R-F1-006。
@@ -140,6 +149,9 @@ public protocol HookIpcTabRouter: AnyObject, Sendable {
     func isActive(tabIdString: String) -> Bool
     /// 把 hook bridge 传来的 string 转回 UUID（无效返回 nil）。
     func uuid(forTabIdString: String) -> UUID?
+    /// 返回该 tab 当前的 Claude permission mode rawValue（"default" / "bypassPermissions" 等）。
+    /// 未知 tab 返回 nil。HookIpcServer 在 actor 内部同步调用，所以必须线程安全且非 isolated。
+    func permissionMode(forTabIdString: String) -> String?
 }
 
 /// HookIpcServer 用来通知 Mac 端 AskQuestionCard UI 的窄接口。
@@ -152,6 +164,20 @@ public protocol HookIpcCardSink: AnyObject {
 /// HookIpcServer 用来通知 JSONLWatcher 去重的窄接口。
 public protocol HookIpcJsonlSink: AnyObject, Sendable {
     func markHookPushed(toolUseId: String)
+    /// R-F5-001 / R-F5-004：按 hook stdin 的 sessionId 反查子 agent meta，
+    /// HookIpcServer 在 actor 内同步调用（必须线程安全且非 isolated）。
+    /// 返回 nil 表示该 sessionId 不属于任何已索引的子 agent（= 主 session
+    /// 直调工具的常规情况）。
+    func findSubAgent(tabId: UUID, sessionId: String) -> SubAgentMetaProtocol?
+}
+
+/// 协议层透出的子 agent meta 投影（避免 HookProtocol 模块直接依赖
+/// JSONLWatcher 中的具体类型；与具体实现的 SubAgentMeta 字段对齐）。
+public protocol SubAgentMetaProtocol: Sendable {
+    var parentToolUseId: String? { get }
+    var agentId: String { get }
+    var agentSessionId: String { get }
+    var promptSummary: String { get }
 }
 
 /// 传给 Mac AskQuestionCardController 的请求数据载体。

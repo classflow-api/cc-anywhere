@@ -60,6 +60,14 @@ public final class WSClientHookIpcSink: HookIpcWsSink {
         sendEnvelope(type: "notification", payload: payload)
     }
 
+    public func sendTabActivity(_ payload: TabActivityPayload) {
+        sendEnvelope(type: "tab.activity", payload: payload)
+    }
+
+    func sendEnvelopePublic<P: Encodable>(type: String, payload: P) {
+        sendEnvelope(type: type, payload: payload)
+    }
+
     // MARK: - 私有
 
     /// 通用：把任意 Codable payload 编码成 AnyJSON，包入 ProtocolMessage envelope，
@@ -78,10 +86,6 @@ public final class WSClientHookIpcSink: HookIpcWsSink {
             return
         }
         log.info("ws push: type=\(type)")
-        // DIAG: 把实际 encode 后的 JSON 字符串打出来排查字段名问题
-        if type == "ask.question.pending", let d = try? JSONEncoder().encode(payload), let s = String(data: d, encoding: .utf8) {
-            log.info("ws push DIAG json: \(s)")
-        }
         Task { @MainActor in
             await ws.send(ProtocolMessage(type: type, data: any))
         }
@@ -100,6 +104,10 @@ public final class TabManagerHookIpcTabRouter: HookIpcTabRouter, @unchecked Send
     private let lock = NSLock()
     /// 锁内独占访问。当前 TabManager 持有的所有 tab UUID。
     private var activeTabIds: Set<UUID> = []
+    /// 锁内独占访问。每个 tab 当前的 permission mode rawValue 快照。
+    /// 用 String 而非 PermissionMode 是为了让本类保持 Sendable（PermissionMode
+    /// 已 Sendable 但 dictionary 转换有额外开销，rawValue 更轻）。
+    private var permissionModes: [UUID: String] = [:]
 
     public init() {}
 
@@ -109,21 +117,25 @@ public final class TabManagerHookIpcTabRouter: HookIpcTabRouter, @unchecked Send
     public func start(tabManager: TabManager,
                       storeIn bag: inout Set<AnyCancellable>) {
         // 立即同步一次当前值，避免订阅前的窗口期 hook 请求被误判为 unknown tab。
-        let initial = Set(tabManager.tabs.map { $0.id })
-        replace(with: initial)
+        replaceSnapshot(from: tabManager.tabs)
 
         tabManager.$tabs
-            .map { Set($0.map { $0.id }) }
-            .removeDuplicates()
-            .sink { [weak self] ids in
-                self?.replace(with: ids)
+            .sink { [weak self] tabs in
+                self?.replaceSnapshot(from: tabs)
             }
             .store(in: &bag)
     }
 
-    private func replace(with ids: Set<UUID>) {
+    private func replaceSnapshot(from tabs: [Tab]) {
+        var ids = Set<UUID>()
+        var modes: [UUID: String] = [:]
+        for t in tabs {
+            ids.insert(t.id)
+            modes[t.id] = t.permissionMode.rawValue
+        }
         lock.lock()
         activeTabIds = ids
+        permissionModes = modes
         lock.unlock()
     }
 
@@ -139,5 +151,62 @@ public final class TabManagerHookIpcTabRouter: HookIpcTabRouter, @unchecked Send
         lock.lock()
         defer { lock.unlock() }
         return activeTabIds.contains(uuid) ? uuid : nil
+    }
+
+    public func permissionMode(forTabIdString s: String) -> String? {
+        guard let uuid = UUID(uuidString: s) else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        return permissionModes[uuid]
+    }
+}
+
+// MARK: - HookIpcActivityAdapter
+
+/// `HookIpcActivitySink` 的 TabManager + WSClient 适配器。
+///
+/// HookIpcServer 在收到 PreToolUse / askKind / Notification idle 时调
+/// `setActivity(tabId: activity:)`，本适配器：
+///   1. 更新 TabManager 内的 Tab.activity（驱动 Mac UI 重绘）
+///   2. 如果状态确实变化了 → 通过 ws 推 `tab.activity` 给 phone（增量推送）
+@MainActor
+public final class HookIpcActivityAdapter: HookIpcActivitySink {
+    private let tabManager: TabManager
+    private weak var ws: WSClientHookIpcSink?
+
+    /// 每个 tab 的 idle 倒计时：working 持续 5 秒没新事件 → 自动转 waiting。
+    /// 用 DispatchSourceTimer 而非 Timer.scheduledTimer — 后者默认走 RunLoop
+    /// default mode，SwiftUI 在 menu / view rebuild 时会阻塞该 mode 导致 timer
+    /// fire 被推迟，实测会让 idle 状态永远不切。
+    private var idleTimers: [UUID: DispatchSourceTimer] = [:]
+    /// idle 阈值（秒）。Claude 思考 + 工具调用之间一般 < 3s，5s 留 buffer。
+    public static let idleTimeout: TimeInterval = 5
+
+    public init(tabManager: TabManager, ws: WSClientHookIpcSink) {
+        self.tabManager = tabManager
+        self.ws = ws
+    }
+
+    public func setActivity(tabId: UUID, activity: String) {
+        let act: ClaudeActivity = (activity == "working") ? .working : .waiting
+        let changed = tabManager.setActivity(tabId, act)
+        if changed {
+            ws?.sendTabActivity(TabActivityPayload(tabId: tabId.uuidString, activity: act.rawValue))
+        }
+
+        // 清理任何残留 timer（无论新状态是 working 还是 waiting）
+        idleTimers[tabId]?.cancel()
+        idleTimers.removeValue(forKey: tabId)
+
+        if act == .working {
+            // working 状态下启动 5s 倒计时；到点自动切 waiting
+            let timer = DispatchSource.makeTimerSource(queue: .main)
+            timer.schedule(deadline: .now() + Self.idleTimeout)
+            timer.setEventHandler { [weak self, tabId] in
+                self?.setActivity(tabId: tabId, activity: "waiting")
+            }
+            idleTimers[tabId] = timer
+            timer.resume()
+        }
     }
 }

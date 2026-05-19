@@ -14,6 +14,10 @@ enum MessageKind {
   toolResult,
   attachment,
   askUserQuestion,
+  /// L4 子 agent 折叠块占位：实际块数据存在 ChatRepository._subAgentBlocks
+  /// （按 key=uuid 之后的 agentId 反查）。此处只作为时间线占位让 SubAgentFoldedBlock
+  /// 在主消息流中正确排序，不携带任何业务字段，避免污染 Message 其余字段。
+  subAgentBlock,
   raw,
 }
 

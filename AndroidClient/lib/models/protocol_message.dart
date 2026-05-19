@@ -52,6 +52,7 @@ abstract class ProtocolType {
   static const tabListRequest = 'tab.list.request';
   static const tabListResponse = 'tab.list.response';
   static const tabChanged = 'tab.changed';
+  static const tabActivity = 'tab.activity';
 
   // 消息
   static const msgStream = 'msg.stream';
@@ -149,6 +150,10 @@ class AskQuestionPendingPayload {
   final List<Map<String, dynamic>> questions;
   final String? toolName;
   final Map<String, dynamic>? toolInput;
+  // ⊕ R-F5: 子 agent 上下文（旧版 mac 端不发，全部 null → UI 降级）
+  final String? parentToolUseId;
+  final String? subAgentSummary;
+  final bool isFromSubAgent;
 
   const AskQuestionPendingPayload({
     required this.requestId,
@@ -159,6 +164,9 @@ class AskQuestionPendingPayload {
     required this.questions,
     this.toolName,
     this.toolInput,
+    this.parentToolUseId,
+    this.subAgentSummary,
+    this.isFromSubAgent = false,
   });
 
   static AskQuestionPendingPayload? tryFrom(Map<String, dynamic> data) {
@@ -188,6 +196,9 @@ class AskQuestionPendingPayload {
       toolInput: toolInput is Map
           ? toolInput.cast<String, dynamic>()
           : null,
+      parentToolUseId: data['parent_tool_use_id'] as String?,
+      subAgentSummary: data['sub_agent_summary'] as String?,
+      isFromSubAgent: (data['is_from_sub_agent'] as bool?) ?? false,
     );
   }
 }
@@ -238,6 +249,24 @@ class AskToolApprovalAnswerPayload {
         'decision': decision,
         if (reason != null && reason!.isNotEmpty) 'reason': reason,
       };
+}
+
+/// `tab.activity` payload —— Mac → server → phone，按 tab 推送 Claude 活动状态。
+/// 由 Mac 端 hook 桥接驱动（PreToolUse → working / Notification idle → waiting），
+/// 只在状态真发生变化时推送（增量）。
+class TabActivityPayload {
+  final String tabId;
+  /// "working" | "waiting"
+  final String activity;
+
+  const TabActivityPayload({required this.tabId, required this.activity});
+
+  static TabActivityPayload? tryFrom(Map<String, dynamic> data) {
+    final tabId = data['tab_id'];
+    if (tabId is! String || tabId.isEmpty) return null;
+    final activity = (data['activity'] as String?) ?? 'waiting';
+    return TabActivityPayload(tabId: tabId, activity: activity);
+  }
 }
 
 /// `ask.question.answered` payload —— Mac App winner 仲裁后广播给所有 phone。

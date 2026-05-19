@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:uuid/uuid.dart';
 
+import '../features/chat/widgets/sub_agent_folded_block.dart';
 import '../models/message.dart';
 import '../models/protocol_message.dart';
 import '../services/dedup_service.dart';
@@ -73,6 +74,39 @@ class ChatRepository {
 
   // tabId -> uuid set（O(1) 去重）
   final Map<String, Set<String>> _uuidIndex = {};
+
+  // L4 子 agent 聚合（R-F3-001 ~ R-F3-004）
+  //
+  // _subAgentBlocks：tabId → key → block，key 优先 parentToolUseId（已匹配到主流
+  //                 Task tool_use 时），否则用 agentId（孤儿模式：mac 端 promptHash
+  //                 反查失败或子先到时）。
+  // _pendingSidechainBuffer：tabId → key → 已到达但父尚未到的 sidechain JSONL
+  //                 records；超时后转孤儿（直接以 agentId 为 key 建块展示，不再
+  //                 等父，R-F3-003 不回溯重组）。
+  // _bufferTimeouts：每个等待中的 key 一个 timer；超时立即把 buffered 转 block 落地。
+  // _bufferTtlSeconds：标记 key 在哪个超时档位上。
+  // _subAgentBlockKeys：tabId → 已创建过 SubAgentFoldedBlock 占位 Message 的 key
+  //                 集合（避免重复插入）。
+  // _subAgentTimestamp：每个 key 首条到达时间（用作 placeholder Message 的 timestamp，
+  //                 让折叠块按真实时间线插入）。
+  // dedup：sidechain message uuid 集合用于 R-F3-004（同 uuid 重复到达只渲染一次，
+  //       JSONL 通道 + 历史回放可能撞 uuid）。
+  final Map<String, Map<String, SubAgentBlock>> _subAgentBlocks = {};
+  final Map<String, Map<String, List<Map<String, dynamic>>>>
+      _pendingSidechainBuffer = {};
+  final Map<String, Map<String, Timer>> _bufferTimeouts = {};
+  final Map<String, Set<String>> _subAgentBlockKeys = {};
+  final Map<String, Map<String, DateTime>> _subAgentTimestamps = {};
+  final Map<String, Set<String>> _sidechainUuidIndex = {};
+
+  /// 实时通道 5 秒；历史回放 30 秒（R-F8-002）— 历史批量到达时 race 窗口更大。
+  static const Duration _bufferTimeoutRealtime = Duration(seconds: 5);
+  static const Duration _bufferTimeoutHistory = Duration(seconds: 30);
+
+  /// 暴露给 message_card_list lookup：根据 placeholder Message 的 uuid 还原块。
+  /// uuid 形如 `subagent-{tabId}-{key}`。
+  SubAgentBlock? lookupSubAgentBlock(String tabId, String key) =>
+      _subAgentBlocks[tabId]?[key];
 
   /// 正在打开的 tabId（用于未读累计判断）
   String? _activeTabId;
@@ -438,10 +472,19 @@ class ChatRepository {
         final tabId = m.data['tab_id'] as String?;
         if (tabId == null) return;
         final raws = (m.data['messages'] as List?) ?? const [];
+        // L4：先经子 agent 聚合预处理 — sidechain 记录被吸入折叠块、Task
+        // tool_use/tool_result 旁路在主流保留同时建/收尾折叠块。返回过滤后仍
+        // 要进主流的 raws + 新增的 SubAgentFoldedBlock 占位 Message。
+        final preprocessed = _preprocessSubAgent(
+          tabId: tabId,
+          raws: raws.whereType<Map>().map((e) => e.cast<String, dynamic>()),
+          isHistory: false,
+        );
         final parsed = <Message>[];
-        for (final r in raws.whereType<Map>()) {
-          parsed.addAll(Message.fromRaw(r.cast<String, dynamic>()));
+        for (final r in preprocessed.passthroughRaws) {
+          parsed.addAll(Message.fromRaw(r));
         }
+        parsed.addAll(preprocessed.newPlaceholders);
         _mergeMessages(tabId, parsed, prepend: false);
         // 未在当前 Tab 时累加未读
         if (tabId != _activeTabId && parsed.isNotEmpty) {
@@ -458,10 +501,17 @@ class ChatRepository {
         if (tabId == null) return;
         final raws = (m.data['messages'] as List?) ?? const [];
         final hasMore = (m.data['has_more'] as bool?) ?? false;
+        // 历史回放：buffer 超时延长到 30s（R-F8-002），但同样走聚合路径。
+        final preprocessed = _preprocessSubAgent(
+          tabId: tabId,
+          raws: raws.whereType<Map>().map((e) => e.cast<String, dynamic>()),
+          isHistory: true,
+        );
         final parsed = <Message>[];
-        for (final r in raws.whereType<Map>()) {
-          parsed.addAll(Message.fromRaw(r.cast<String, dynamic>()));
+        for (final r in preprocessed.passthroughRaws) {
+          parsed.addAll(Message.fromRaw(r));
         }
+        parsed.addAll(preprocessed.newPlaceholders);
         _mergeMessages(tabId, parsed, prepend: true);
         final cur = _state[tabId] ??
             TabChatState(tabId: tabId, messages: const []);
@@ -484,6 +534,247 @@ class ChatRepository {
         );
         break;
     }
+  }
+
+  /// L4 子 agent 聚合预处理（R-F3-001 ~ R-F3-004）。
+  ///
+  /// 接收 msg.stream / msg.history.response 一批 JSONL raw record（每条是个 Map），
+  /// 按 isSidechain 字段分流：
+  ///  - isSidechain=true：吸入对应 parentToolUseId/agentId 块的 children，不进主流
+  ///  - isSidechain=false 且 message.content 含 type=tool_use && name=Task：
+  ///       同时建/更新 SubAgentBlock（key=tool_use.id），并保留原 raw 进主流（用户
+  ///       照常看到 Task 工具卡）
+  ///  - isSidechain=false 且 message.content 含 type=tool_result 且 tool_use_id
+  ///       命中已存在的 SubAgentBlock：写入 finalResult，主流仍保留（dedup 由
+  ///       _mergeMessages 处理）
+  ///
+  /// 返回需要走主流 Message.fromRaw 的 raws 列表 + 本批次首次创建的折叠块
+  /// placeholder Message（要插入主消息流让用户看到块）。
+  ({List<Map<String, dynamic>> passthroughRaws, List<Message> newPlaceholders})
+      _preprocessSubAgent({
+    required String tabId,
+    required Iterable<Map<String, dynamic>> raws,
+    required bool isHistory,
+  }) {
+    final passthrough = <Map<String, dynamic>>[];
+    final newPlaceholders = <Message>[];
+    final blocks = _subAgentBlocks.putIfAbsent(tabId, () => {});
+    final pending = _pendingSidechainBuffer.putIfAbsent(tabId, () => {});
+    final placeholderKeys = _subAgentBlockKeys.putIfAbsent(tabId, () => {});
+    final timestamps = _subAgentTimestamps.putIfAbsent(tabId, () => {});
+    final sidechainUuids = _sidechainUuidIndex.putIfAbsent(tabId, () => {});
+
+    for (final raw in raws) {
+      final isSidechain = (raw['isSidechain'] as bool?) ?? false;
+      final uuid = raw['uuid'] as String?;
+
+      // R-F3-004 dedup：sidechain 记录按 uuid 去重（同一 uuid 重复到达只处理一次）。
+      // 主流非 sidechain 仍走原 _mergeMessages 的 uuid 去重路径，这里不重复管。
+      if (isSidechain && uuid != null && sidechainUuids.contains(uuid)) {
+        continue;
+      }
+
+      if (isSidechain) {
+        if (uuid != null) sidechainUuids.add(uuid);
+        // 优先 parentToolUseId；mac 端 promptHash 反查命中才注入此字段，否则
+        // fallback 用 agentId（孤儿模式占位）。
+        final parentId = raw['parent_tool_use_id'] as String?;
+        final agentId = raw['agentId'] as String?;
+        final key = parentId ?? agentId;
+        if (key == null) {
+          // 既无 parentToolUseId 又无 agentId 的 sidechain — 协议字段都缺，
+          // 退化为现有体验直接进主流（R-F3 中 ⊕ "孤儿且无父" 极端兜底）。
+          passthrough.add(raw);
+          continue;
+        }
+        if (blocks.containsKey(key)) {
+          blocks[key]!.children.add(raw);
+        } else {
+          // 父尚未到 → 暂存，启动 buffer 超时
+          pending.putIfAbsent(key, () => []).add(raw);
+          _scheduleBufferTimeout(
+            tabId: tabId,
+            key: key,
+            agentId: agentId ?? key,
+            isHistory: isHistory,
+          );
+        }
+        // R-F3-001：sidechain 不进主流，避免双卡
+        continue;
+      }
+
+      // 非 sidechain：先探测 Task tool_use / tool_result，再决定是否进主流。
+      // 第二轮 review 🟡-2：tool_result 已被折叠块 finalResult 吸收时跳过主流，
+      // 避免"主流 ToolResultCard + 折叠块内 _buildFinalResult"双重渲染。
+      var absorbedByBlock = false;
+
+      final detection = _detectTaskInRecord(raw);
+      if (detection != null) {
+        if (detection.kind == _TaskRecordKind.toolUse) {
+          // 父 Task tool_use 到达 — 建立或回填折叠块
+          final taskKey = detection.toolUseId;
+          if (taskKey != null) {
+            final ts = _parseRecordTs(raw);
+            final summary = _truncate(detection.promptSummary ?? '', 60);
+            final block = blocks.putIfAbsent(
+              taskKey,
+              () => SubAgentBlock(
+                agentId: detection.agentId ?? taskKey,
+                parentToolUseId: taskKey,
+                promptSummary: summary,
+              ),
+            );
+            // 即使已存在（罕见：先 race 由 agentId 建过孤儿块后 task 又来），
+            // 字段补齐
+            if (block.promptSummary.isEmpty && summary.isNotEmpty) {
+              // 不能直接覆盖 final 字段，但我们没把 promptSummary 设 final，
+              // 故反射式行不通；这里只 best-effort：忽略（极少触发，孤儿块仍可见）。
+            }
+            // 收割 pending buffer
+            final waiting = pending.remove(taskKey);
+            if (waiting != null) {
+              block.children.addAll(waiting);
+              _bufferTimeouts[tabId]?.remove(taskKey)?.cancel();
+            }
+            // 首次见到 — 插入主流占位 Message（按 Task tool_use 真实时间）
+            if (!placeholderKeys.contains(taskKey)) {
+              placeholderKeys.add(taskKey);
+              timestamps[taskKey] = ts;
+              newPlaceholders.add(_buildPlaceholder(tabId, taskKey, ts));
+            }
+          }
+        } else if (detection.kind == _TaskRecordKind.toolResult) {
+          // 父 session 的 Task tool_result — 收尾对应折叠块
+          final refId = detection.toolUseId;
+          if (refId != null && blocks.containsKey(refId)) {
+            final block = blocks[refId]!;
+            block.finalResult = raw;
+            // R-F4-003：含 error 字段 → 失败
+            block.status = detection.isError == true ? 'failed' : 'done';
+            absorbedByBlock = true;  // R-F4-002 隐含语义：final 是折叠块组成部分
+          }
+        }
+      }
+
+      if (!absorbedByBlock) {
+        passthrough.add(raw);
+      }
+    }
+
+    return (passthroughRaws: passthrough, newPlaceholders: newPlaceholders);
+  }
+
+  /// 5s / 30s 超时后把 pending sidechain 转为孤儿块（agentId 作 key）。
+  /// R-F3-002 / R-F3-003：超时孤儿展示，后续父消息再到达**不回溯重组**避免 UI 闪烁。
+  void _scheduleBufferTimeout({
+    required String tabId,
+    required String key,
+    required String agentId,
+    required bool isHistory,
+  }) {
+    final timers = _bufferTimeouts.putIfAbsent(tabId, () => {});
+    // 已有 timer 不重置 — 老 timer 计的是首条到达后的窗口，重置会让窗口被
+    // 持续刷新到永远（race 中子 agent 边到边刷会饿死孤儿展示）。
+    if (timers.containsKey(key)) return;
+    final dur = isHistory ? _bufferTimeoutHistory : _bufferTimeoutRealtime;
+    timers[key] = Timer(dur, () {
+      timers.remove(key);
+      final pending = _pendingSidechainBuffer[tabId]?.remove(key);
+      if (pending == null || pending.isEmpty) return;
+      final blocks = _subAgentBlocks.putIfAbsent(tabId, () => {});
+      final placeholderKeys =
+          _subAgentBlockKeys.putIfAbsent(tabId, () => {});
+      // 孤儿块：用 agentId 当 key，无 parentToolUseId
+      final block = blocks.putIfAbsent(
+        key,
+        () => SubAgentBlock(
+          agentId: agentId,
+          parentToolUseId: null,
+          promptSummary: '',
+        ),
+      );
+      block.children.addAll(pending);
+      if (!placeholderKeys.contains(key)) {
+        placeholderKeys.add(key);
+        final ts = _parseRecordTs(pending.first);
+        _subAgentTimestamps.putIfAbsent(tabId, () => {})[key] = ts;
+        // 直接走 _mergeMessages 单条插入：buffer 超时是异步事件，没法走
+        // _preprocessSubAgent 的 newPlaceholders 返回路径。
+        _mergeOne(tabId, _buildPlaceholder(tabId, key, ts));
+      } else {
+        // 已有占位 → 仅刷新状态（_subAgentBlocks 是引用类型，widget 重 build 会
+        // 自动取到新 children），但 widget 在 Stream 上是 push 的，需要主动 emit。
+        final cur = _state[tabId];
+        if (cur != null) _update(tabId, cur);
+      }
+    });
+  }
+
+  Message _buildPlaceholder(String tabId, String key, DateTime ts) => Message(
+        uuid: 'subagent-$tabId-$key',
+        role: MessageRole.assistant,
+        kind: MessageKind.subAgentBlock,
+        timestamp: ts,
+      );
+
+  DateTime _parseRecordTs(Map<String, dynamic> raw) {
+    final v = raw['timestamp'] ?? raw['created_at'];
+    if (v is String) {
+      final dt = DateTime.tryParse(v);
+      if (dt != null) return dt;
+    }
+    if (v is num) return DateTime.fromMillisecondsSinceEpoch(v.toInt());
+    return DateTime.now();
+  }
+
+  String _truncate(String s, int max) =>
+      s.length <= max ? s : '${s.substring(0, max)}…';
+
+  /// 解析一条非 sidechain JSONL record，查 message.content 中是否含 Task
+  /// tool_use 或 tool_result，提取信息。返回 null 表示与 Task 无关。
+  _TaskRecordDetection? _detectTaskInRecord(Map<String, dynamic> raw) {
+    try {
+      final inner = raw['message'];
+      if (inner is! Map) return null;
+      final content = inner['content'];
+      if (content is! List) return null;
+      for (final item in content) {
+        if (item is! Map) continue;
+        final type = item['type'];
+        if (type == 'tool_use' && item['name'] == 'Task') {
+          final id = item['id'] as String?;
+          String? prompt;
+          final input = item['input'];
+          if (input is Map) {
+            final p = input['prompt'];
+            if (p is String) prompt = p;
+          }
+          return _TaskRecordDetection(
+            kind: _TaskRecordKind.toolUse,
+            toolUseId: id,
+            promptSummary: prompt,
+            // 父 session 的 Task tool_use 没有 agentId（agentId 是 sidechain 内
+            // 才有的子 agent 短 hash），此处置 null。
+            agentId: null,
+            isError: null,
+          );
+        }
+        if (type == 'tool_result') {
+          // 仅当 tool_use_id 命中已知子 agent 块才视作 Task tool_result。
+          // 普通工具的 tool_result 也长这样，但 caller 会判断 blocks.containsKey。
+          final refId = item['tool_use_id'] as String?;
+          final isErr = item['is_error'] as bool?;
+          return _TaskRecordDetection(
+            kind: _TaskRecordKind.toolResult,
+            toolUseId: refId,
+            promptSummary: null,
+            agentId: null,
+            isError: isErr,
+          );
+        }
+      }
+    } catch (_) {/* 解析失败静默放行，主流照常 */}
+    return null;
   }
 
   void _mergeMessages(String tabId, List<Message> items, {required bool prepend}) {
@@ -638,6 +929,19 @@ class ChatRepository {
     // 清掉该 tab 所有 pending download URL 请求映射 — /clear 之后这些响应到来也无意义。
     _pendingDownloadUrl.removeWhere((_, v) => v.tabId == tabId);
     _typingTimers.remove(tabId)?.cancel();
+    // L4：/clear 同步清空子 agent 折叠块 + buffer + timers，否则历史块仍残留可点开。
+    _subAgentBlocks[tabId]?.clear();
+    _pendingSidechainBuffer[tabId]?.clear();
+    _subAgentBlockKeys[tabId]?.clear();
+    _subAgentTimestamps[tabId]?.clear();
+    _sidechainUuidIndex[tabId]?.clear();
+    final timers = _bufferTimeouts[tabId];
+    if (timers != null) {
+      for (final t in timers.values) {
+        t.cancel();
+      }
+      timers.clear();
+    }
     _update(tabId, cur.copyWith(messages: const [], hasMore: false, assistantTyping: false));
   }
 
@@ -663,12 +967,38 @@ class ChatRepository {
     }
     _typingTimers.clear();
     _pendingDownloadUrl.clear();
+    // L4 子 agent buffer timers：dispose 时全部 cancel，避免 widget tree 卸载后
+    // closure 仍 fire 触发 _mergeOne 撞已关闭 stream。
+    for (final timers in _bufferTimeouts.values) {
+      for (final t in timers.values) {
+        t.cancel();
+      }
+    }
+    _bufferTimeouts.clear();
     for (final c in _ctrls.values) {
       await c.close();
     }
   }
 
   StreamSubscription<ProtocolMessage>? _sub;
+}
+
+/// 内部辅助：从一条非 sidechain JSONL record 提取出的 Task 相关信息。
+enum _TaskRecordKind { toolUse, toolResult }
+
+class _TaskRecordDetection {
+  final _TaskRecordKind kind;
+  final String? toolUseId;
+  final String? promptSummary;
+  final String? agentId;
+  final bool? isError;
+  const _TaskRecordDetection({
+    required this.kind,
+    required this.toolUseId,
+    required this.promptSummary,
+    required this.agentId,
+    required this.isError,
+  });
 }
 
 final chatRepositoryProvider = Provider<ChatRepository>((ref) {

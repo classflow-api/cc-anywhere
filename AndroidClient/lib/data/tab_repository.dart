@@ -88,10 +88,24 @@ class TabRepository {
           if (action == 'removed') {
             _tabs.remove(tab.id);
           } else {
-            _tabs[tab.id] = tab;
+            // 保留既有 activity（Mac 端 tab.changed 不含 activity 字段）
+            final existing = _tabs[tab.id];
+            _tabs[tab.id] = existing != null
+                ? tab.copyWith(activity: existing.activity)
+                : tab;
           }
           _emit();
         }
+        break;
+      case ProtocolType.tabActivity:
+        final p = TabActivityPayload.tryFrom(m.data);
+        if (p == null) break;
+        final existing = _tabs[p.tabId];
+        if (existing == null) break;
+        _tabs[p.tabId] = existing.copyWith(
+          activity: parseClaudeActivity(p.activity),
+        );
+        _emit();
         break;
     }
   }

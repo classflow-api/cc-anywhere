@@ -121,12 +121,19 @@ class AskNotificationService {
   }
 
   /// ask 已被回答 / 超时 / 取消 → 清掉对应通知。
+  ///
+  /// 延迟 3 秒再 cancel：winner-lock 仲裁可能在 < 1 秒内发生（用户在 Mac 上
+  /// 先答了），如果立即 cancel，OPPO/小米/华为 等定制系统还没来得及显示
+  /// 抬头横幅通知就被撤回，用户看不到震动 + 弹出效果，体验等同没通知。
+  /// 延迟 3 秒后再 cancel，给系统足够时间至少把通知亮一下。
   Future<void> dismissAsk(String requestId) async {
     if (!_initialized) return;
     final id = requestId.hashCode & 0x7FFFFFFF;
-    try {
-      await _plugin.cancel(id);
-    } catch (_) {}
+    Future.delayed(const Duration(seconds: 3), () async {
+      try {
+        await _plugin.cancel(id);
+      } catch (_) {}
+    });
   }
 }
 

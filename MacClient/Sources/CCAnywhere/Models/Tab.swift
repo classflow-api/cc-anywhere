@@ -10,16 +10,28 @@ public enum TabStatus: String, Codable, Sendable {
     case error
 }
 
+/// Claude 在该 Tab 内的活动状态（独立于 PTY 进程状态）。
+/// 由 hook 桥接驱动：PreToolUse / 新 user message → working；
+/// Notification {type:"idle"} → waiting。
+public enum ClaudeActivity: String, Codable, Sendable {
+    case waiting    // Claude 等待用户输入（idle Notification 已收到）
+    case working    // Claude 在思考 / 执行工具
+}
+
 public struct Tab: Codable, Identifiable, Hashable, Sendable {
     public var id: UUID
     public var folder: URL
     public var name: String
     public var createdAt: Date
+    /// Claude Code 的 permission mode（传给 claude 子进程的 `--permission-mode` flag）。
+    /// 持久化保存；旧版本数据反序列化时该字段缺失则回退到 .default。
+    public var permissionMode: PermissionMode = .default
 
     /// Runtime-only fields (not persisted).
     /// We keep them on the same struct to make SwiftUI binding simpler,
     /// but exclude from Codable.
     public var status: TabStatus = .idle
+    public var activity: ClaudeActivity = .waiting
     public var exitCode: Int32? = nil
     /// Human-readable reason populated when status == .error and the cause is
     /// something more specific than just "process exited" — e.g. the claude
@@ -32,20 +44,23 @@ public struct Tab: Codable, Identifiable, Hashable, Sendable {
                 folder: URL,
                 name: String,
                 createdAt: Date = Date(),
+                permissionMode: PermissionMode = .default,
                 status: TabStatus = .idle) {
         self.id = id
         self.folder = folder
         self.name = name
         self.createdAt = createdAt
+        self.permissionMode = permissionMode
         self.status = status
     }
 
-    // MARK: - Codable (persist only id/folder/name/createdAt)
+    // MARK: - Codable (persist id/folder/name/createdAt/permissionMode)
     private enum CodingKeys: String, CodingKey {
         case id
         case folder
         case name
         case createdAt = "created_at"
+        case permissionMode = "permission_mode"
     }
 
     public init(from decoder: Decoder) throws {
@@ -55,6 +70,13 @@ public struct Tab: Codable, Identifiable, Hashable, Sendable {
         self.folder = URL(fileURLWithPath: folderStr)
         self.name = try c.decode(String.self, forKey: .name)
         self.createdAt = try c.decode(Date.self, forKey: .createdAt)
+        // 兼容旧持久化（缺该字段或值非法都回退到 default）
+        if let raw = try c.decodeIfPresent(String.self, forKey: .permissionMode),
+           let m = PermissionMode(rawValue: raw) {
+            self.permissionMode = m
+        } else {
+            self.permissionMode = .default
+        }
         self.status = .idle
     }
 
@@ -64,6 +86,7 @@ public struct Tab: Codable, Identifiable, Hashable, Sendable {
         try c.encode(folder.path, forKey: .folder)
         try c.encode(name, forKey: .name)
         try c.encode(createdAt, forKey: .createdAt)
+        try c.encode(permissionMode.rawValue, forKey: .permissionMode)
     }
 }
 

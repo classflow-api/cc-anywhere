@@ -37,6 +37,7 @@ public final class DependencyContainer: ObservableObject {
 
     /// 把 WSClient 适配为 HookIpcWsSink（payload → ProtocolMessage envelope）。
     public let wsHookIpcSink: WSClientHookIpcSink
+    public var hookActivitySink: HookIpcActivityAdapter?
 
     /// 把 TabManager 适配为 HookIpcTabRouter（线程安全 snapshot）。
     public let hookIpcTabRouter: TabManagerHookIpcTabRouter
@@ -128,16 +129,21 @@ public final class DependencyContainer: ObservableObject {
         // HookIpcServer 用的 tab router snapshot：订阅 TabManager.tabs。
         hookIpcTabRouter.start(tabManager: tabManager, storeIn: &cancellables)
 
-        // HookIpcServer 内部需要 ws / jsonl / card 的弱引用。
+        // HookIpcServer 内部需要 ws / jsonl / card / activity 的弱引用。
         // 这些 setter 是 actor 方法，需要 await；用 Task 包装。
         let server = hookIpcServer
         let wsSink = wsHookIpcSink
         let jsonl: HookIpcJsonlSink = jsonlWatcher
         let card = askCardController
+        let activitySink = HookIpcActivityAdapter(tabManager: tabManager, ws: wsHookIpcSink)
+        self.hookActivitySink = activitySink
+        // 同时把 activitySink 注入 JSONLWatcher 桥接器（JSONL 写入 → working）
+        msgStreamBridge?.activitySink = activitySink
         Task {
             await server.setWsClient(wsSink)
             await server.setJsonlWatcher(jsonl)
             await server.setCardController(card)
+            await server.setActivitySink(activitySink)
         }
         // AskCardController 反向持有 server 弱引用（用户提交时回调 actor）。
         askCardController.hookIpcServer = hookIpcServer
@@ -262,6 +268,10 @@ public final class DependencyContainer: ObservableObject {
 private final class MsgStreamBridge: JSONLWatcherDelegate {
     let ws: WSClient
     let tabManager: TabManager
+    /// 弱引用：JSONL 写入时上报 activity = working（Claude 在产出内容）。
+    /// Notification idle hook 那一侧负责 → waiting。
+    weak var activitySink: HookIpcActivityAdapter?
+
     init(ws: WSClient, tabManager: TabManager) {
         self.ws = ws
         self.tabManager = tabManager
@@ -269,20 +279,48 @@ private final class MsgStreamBridge: JSONLWatcherDelegate {
 
     func watcher(_ watcher: JSONLWatcher, didReceive batch: [ParsedMessage], for tabId: UUID) {
         // Convert ParsedMessage[] -> array of raw JSON objects.
+        // R-F2-002/003：对 isSidechain=true 的消息，若已建立 agentId →
+        // parentToolUseId 映射，则在 AnyJSON.object 上注入 parent_tool_use_id
+        // 字段，让 phone 端 ChatRepository 直接按该字段聚合，不必再做匹配。
         let array: [AnyJSON] = batch.map { msg in
-            if let data = msg.raw.data(using: .utf8),
-               let any = try? JSONDecoder().decode(AnyJSON.self, from: data) {
-                return any
+            guard let data = msg.raw.data(using: .utf8),
+                  let any = try? JSONDecoder().decode(AnyJSON.self, from: data) else {
+                return .object(["type": .string("raw"), "raw": .string(msg.raw)])
             }
-            return .object(["type": .string("raw"), "raw": .string(msg.raw)])
+            return Self.injectParentToolUseId(any, watcher: watcher, tabId: tabId)
         }
         let payload: AnyJSON = .object([
             "tab_id": .string(tabId.uuidString),
             "messages": .array(array)
         ])
-        Task { @MainActor in
+        Task { @MainActor [weak activitySink] in
             await ws.send(ProtocolMessage(type: "msg.stream", data: payload))
             tabManager.bumpActivity(tabId)
+            // Claude 在写 JSONL = 在产出内容 = working。
+            // 比 PreToolUse hook 覆盖更广（纯文本思考也算 working）。
+            activitySink?.setActivity(tabId: tabId, activity: "working")
         }
+    }
+
+    /// R-F2-002：若消息 isSidechain=true 且 agentId 在 watcher.activeSubAgents
+    /// 中已建立 parentToolUseId 映射 → 注入到 AnyJSON。
+    /// 注：JSONL 原生 record 已带 sessionId / parentUuid / isSidechain；只补
+    /// parentToolUseId 这个"两阶段匹配派生字段"即可。
+    private static func injectParentToolUseId(_ any: AnyJSON,
+                                              watcher: JSONLWatcher,
+                                              tabId: UUID) -> AnyJSON {
+        guard case .object(var obj) = any else { return any }
+        // 必须是 sidechain 才注入；非 sidechain 消息不携带 parent_tool_use_id。
+        guard case .bool(true) = (obj["isSidechain"] ?? .null) else { return any }
+        guard case .string(let agentId) = (obj["agentId"] ?? .null) else { return any }
+        // 已注入过的不重复（防御性：JSONL record 通常没这字段，但兜底无害）
+        if case .string = obj["parent_tool_use_id"] { return any }
+        // delegate 回调由 throttle 的 queue.asyncAfter 派发，已经在 watcher.queue 上执行
+        // → 必须用 *Locked 版本读取，避免 queue.sync 自我死锁（第一轮 review 阻塞 #1）。
+        guard let parentId = watcher.parentToolUseIdLocked(tabId: tabId, agentId: agentId) else {
+            return any
+        }
+        obj["parent_tool_use_id"] = .string(parentId)
+        return .object(obj)
     }
 }

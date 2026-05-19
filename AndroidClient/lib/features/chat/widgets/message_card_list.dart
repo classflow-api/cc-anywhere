@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -8,6 +10,7 @@ import 'ask_user_question_card.dart';
 import 'assistant_text_card.dart';
 import 'attachment_card.dart';
 import 'raw_card.dart';
+import 'sub_agent_folded_block.dart';
 import 'thinking_card.dart';
 import 'time_separator.dart';
 import 'tool_result_card.dart';
@@ -41,6 +44,11 @@ class _MessageCardListState extends ConsumerState<MessageCardList> {
   /// 首次进入聊天界面是否已完成初始滚到底（防止重复触发）。
   bool _initialScrollDone = false;
 
+  /// `_scheduleInitialJump` 排程的可取消 timer 列表。dispose 时统一 cancel，
+  /// 避免 widget unmount 期间 closure 仍然 fire 撞 RenderObject `_owner != null`
+  /// assertion（场景：用户进入空聊天页 < 450ms 内立即返回）。
+  final List<Timer> _initJumpTimers = [];
+
   @override
   void initState() {
     super.initState();
@@ -70,21 +78,28 @@ class _MessageCardListState extends ConsumerState<MessageCardList> {
   }
 
   /// 在 0/80/200/400ms 各跳一次，确保异步加载完成 + layout 稳定后真到底。
+  /// 用可取消的 Timer 而非 Future.delayed —— 后者无法取消，widget 已 unmount
+  /// 但 dispose 还没跑的窗口期内 closure 仍可能触发，撞 RenderObject `_owner`
+  /// assertion。
   void _scheduleInitialJump() {
     for (final ms in const [0, 80, 200, 400]) {
-      Future.delayed(Duration(milliseconds: ms), () {
+      _initJumpTimers.add(Timer(Duration(milliseconds: ms), () {
         if (!mounted) return;
         _jumpToBottom();
-      });
+      }));
     }
     // 最后一次 retry 完后标记完成（之后走正常 didUpdateWidget 滚动逻辑）
-    Future.delayed(const Duration(milliseconds: 450), () {
+    _initJumpTimers.add(Timer(const Duration(milliseconds: 450), () {
       if (mounted) _initialScrollDone = true;
-    });
+    }));
   }
 
   @override
   void dispose() {
+    for (final t in _initJumpTimers) {
+      t.cancel();
+    }
+    _initJumpTimers.clear();
     _scrollCtrl.removeListener(_onScroll);
     _scrollCtrl.dispose();
     super.dispose();
@@ -112,12 +127,19 @@ class _MessageCardListState extends ConsumerState<MessageCardList> {
 
   void _jumpToBottom() {
     if (!_scrollCtrl.hasClients) return;
-    _scrollCtrl.jumpTo(_scrollCtrl.position.maxScrollExtent);
+    final pos = _scrollCtrl.position;
+    // ListView 已 layout 完毕才有 content dimensions；timer fire 时如果对应
+    // RenderObject 已 detach（unmount 中间态），hasContentDimensions = false，
+    // 此处直接 noop 而非访问 maxScrollExtent 触发 _owner assertion。
+    if (!pos.hasContentDimensions) return;
+    _scrollCtrl.jumpTo(pos.maxScrollExtent);
   }
 
   void _scrollToBottom({bool animate = false}) {
     if (!_scrollCtrl.hasClients) return;
-    final target = _scrollCtrl.position.maxScrollExtent;
+    final pos = _scrollCtrl.position;
+    if (!pos.hasContentDimensions) return;
+    final target = pos.maxScrollExtent;
     if (animate) {
       _scrollCtrl.animateTo(target,
           duration: const Duration(milliseconds: 240),
@@ -238,6 +260,20 @@ class _MessageCardListState extends ConsumerState<MessageCardList> {
 
   Widget _buildCard(Message m) {
     switch (m.kind) {
+      case MessageKind.subAgentBlock:
+        // L4：placeholder Message uuid 形如 'subagent-<tabId>-<key>'，
+        // 反查 ChatRepository._subAgentBlocks 拿到真正的 block 数据后渲染。
+        // 解析失败（理论不发生）退化为空 SizedBox，避免空卡污染主流。
+        final prefix = 'subagent-${widget.tabId}-';
+        if (!m.uuid.startsWith(prefix)) {
+          return const SizedBox.shrink();
+        }
+        final key = m.uuid.substring(prefix.length);
+        final block = ref
+            .read(chatRepositoryProvider)
+            .lookupSubAgentBlock(widget.tabId, key);
+        if (block == null) return const SizedBox.shrink();
+        return SubAgentFoldedBlock(key: ValueKey(m.uuid), block: block);
       case MessageKind.text:
         if (m.role == MessageRole.user) {
           return UserCard(

@@ -35,7 +35,9 @@ public final class TabManager: ObservableObject {
 
     // MARK: - CRUD
 
-    public func createTab(folder: URL, name: String) throws -> Tab {
+    public func createTab(folder: URL,
+                          name: String,
+                          permissionMode: PermissionMode = .default) throws -> Tab {
         let normalized = folder.standardizedFileURL
         // Validate not duplicate
         if tabs.contains(where: { $0.folder.standardizedFileURL.path == normalized.path }) {
@@ -54,13 +56,39 @@ public final class TabManager: ObservableObject {
         } else {
             safeName = name
         }
-        let tab = Tab(folder: normalized, name: safeName)
+        let tab = Tab(folder: normalized, name: safeName, permissionMode: permissionMode)
         tabs.append(tab)
         selectedTabId = tab.id
         try persist()
-        log.info("created tab \(tab.name) folder=\(normalized.path)")
+        log.info("created tab \(tab.name) folder=\(normalized.path) mode=\(permissionMode.rawValue)")
         changes.send(.added(tab))
         return tab
+    }
+
+    /// 修改 Tab 的 permission mode。仅写入并持久化；**不**主动重启 claude 子进程
+    /// —— 调用方（SidebarView / TabStripView）拿到返回值后自行决定是否
+    /// `ProcessHost.stopProcess + startProcess`。这样耦合最少。
+    /// 返回新 Tab 快照（也用于触发 ws 同步）。失败（id 不存在 / mode 相同 / 持久化失败）返回 nil。
+    @discardableResult
+    public func setPermissionMode(_ id: UUID, _ mode: PermissionMode) -> Tab? {
+        guard let idx = tabs.firstIndex(where: { $0.id == id }) else { return nil }
+        guard tabs[idx].permissionMode != mode else { return nil }
+        tabs[idx].permissionMode = mode
+        do {
+            try persist()
+        } catch {
+            log.error("persist failed after setPermissionMode: \(error)")
+            return nil
+        }
+        // bypassPermissions / dontAsk 是高危 / 锁定场景，提级到 warn 留可见痕迹
+        if mode == .bypassPermissions || mode == .dontAsk {
+            log.warn("permission mode → \(mode.rawValue) (tab=\(id)) — elevated mode, ensure intent")
+        } else {
+            log.info("permission mode → \(mode.rawValue) (tab=\(id))")
+        }
+        // 复用 .renamed 事件让 ws TabSyncBridge 把更新过的 Tab 广播给手机
+        changes.send(.renamed(tabs[idx]))
+        return tabs[idx]
     }
 
     public func removeTab(_ id: UUID) throws {
@@ -74,15 +102,32 @@ public final class TabManager: ObservableObject {
         changes.send(.removed(removed))
     }
 
+    /// 重命名 Tab。规则：
+    /// - 输入 trim 前后空白；
+    /// - trim 后为空 → 视为"重置为默认名"，使用 folder.lastPathComponent；
+    /// - trim 后超过 40 字符 → 截断到 40（不抛错，保证用户操作不被打断）。
+    /// 调用方仍可用 try? 调用：当前实现实际上从不 throw，保留 throws 是为不破坏现有签名。
     public func renameTab(_ id: UUID, to newName: String) throws {
         guard let idx = tabs.firstIndex(where: { $0.id == id }) else { return }
-        let safe = newName.isEmpty
-            ? tabs[idx].folder.lastPathComponent
-            : newName
-        if safe.count > 50 { throw TabError.nameTooLong }
-        tabs[idx].name = safe
+        // 先把中间的换行/回车折成空格，再 trim 前后空白。避免用户粘贴带 \n 的名字
+        // 撑爆侧栏 / 手机端 UI（侧栏 lineLimit(1) 不一定能 100% 防住所有 Unicode 行分隔）。
+        let normalized = newName
+            .replacingOccurrences(of: "\r\n", with: " ")
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: "\r", with: " ")
+        let trimmed = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved: String
+        if trimmed.isEmpty {
+            resolved = tabs[idx].folder.lastPathComponent
+        } else if trimmed.count > 40 {
+            resolved = String(trimmed.prefix(40))
+        } else {
+            resolved = trimmed
+        }
+        guard tabs[idx].name != resolved else { return }
+        tabs[idx].name = resolved
         try persist()
-        log.info("renamed tab to \(safe)")
+        log.info("renamed tab to \(resolved)")
         changes.send(.renamed(tabs[idx]))
     }
 
@@ -100,6 +145,17 @@ public final class TabManager: ObservableObject {
         } else if errorReason != nil {
             tabs[idx].errorReason = errorReason
         }
+    }
+
+    /// 设置该 Tab 内 Claude 的活动状态（working / waiting）。
+    /// 由 hook 桥接（PreToolUse → working / Notification idle → waiting）驱动。
+    /// 返回值：true 表示状态真发生了变化（caller 可据此决定要不要 ws 推 phone）。
+    @discardableResult
+    public func setActivity(_ id: UUID, _ activity: ClaudeActivity) -> Bool {
+        guard let idx = tabs.firstIndex(where: { $0.id == id }) else { return false }
+        guard tabs[idx].activity != activity else { return false }
+        tabs[idx].activity = activity
+        return true
     }
 
     public func bumpActivity(_ id: UUID) {
@@ -123,13 +179,31 @@ public final class TabManager: ObservableObject {
 
     private func loadFromDisk() {
         guard let data = try? Data(contentsOf: storeURL) else { return }
-        do {
-            let decoded = try JSONDecoder.iso.decode([Tab].self, from: data)
+        // 先尝试整体解码（fast path）；失败则降级为逐条解码 —— 这样单个 Tab 的
+        // 损坏（比如未来某字段类型变更 / 外部编辑器把 mode 写成 number）不会让
+        // 整个工作区列表丢失。
+        if let decoded = try? JSONDecoder.iso.decode([Tab].self, from: data) {
             self.tabs = decoded
             self.selectedTabId = tabs.first?.id
             log.info("loaded \(decoded.count) tab(s) from disk")
-        } catch {
-            log.error("failed to decode tabs.json: \(error). Starting empty.")
+            return
+        }
+        log.warn("tabs.json full decode failed; falling back to per-row decode")
+        if let array = try? JSONSerialization.jsonObject(with: data) as? [Any] {
+            var rescued: [Tab] = []
+            for raw in array {
+                guard let rowData = try? JSONSerialization.data(withJSONObject: raw) else { continue }
+                if let one = try? JSONDecoder.iso.decode(Tab.self, from: rowData) {
+                    rescued.append(one)
+                } else {
+                    log.warn("dropping malformed tab row: \(raw)")
+                }
+            }
+            self.tabs = rescued
+            self.selectedTabId = tabs.first?.id
+            log.info("rescued \(rescued.count) tab(s) from per-row decode")
+        } else {
+            log.error("tabs.json corrupted beyond rescue; starting empty")
             self.tabs = []
         }
     }

@@ -253,32 +253,149 @@ private struct UserQuestionBody: View {
     @State private var selections: [Int: Set<String>] = [:]
     /// 每个 question 的自定义回答输入框内容（始终展示，对齐 R-F1-012）。
     @State private var otherTexts: [Int: String] = [:]
+    /// 翻页改造：当前显示的问题索引（永远启用单题视图；N=1 时步进控件自动隐藏）。
+    @State private var currentIndex: Int = 0
+    /// 卡片整体的键盘焦点。仅用于接收 ← → 翻页事件；用户点击 TextField 时
+    /// TextField 自动接管焦点，左右键退还给文本编辑（避免与翻页冲突）。
+    @FocusState private var keyboardFocused: Bool
 
     /// 自定义回答的特殊 sentinel label。
     private static let otherSentinel = "__cc_anywhere_other__"
     /// 自定义回答输入框最大长度（NFR-C5）。
     private static let otherMaxLength = 200
 
+    private var questions: [AskQuestionItem] { request.questions ?? [] }
+    private var totalCount: Int { questions.count }
+    private var isFirst: Bool { currentIndex <= 0 }
+    private var isLast: Bool { currentIndex >= max(0, totalCount - 1) }
+    /// 是否需要显示翻页步进控件（≥ 2 题）。单题场景退化为现有体验。
+    private var showStepper: Bool { totalCount >= 2 }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            ForEach(Array((request.questions ?? []).enumerated()), id: \.offset) { (idx, q) in
-                questionBlock(index: idx, question: q)
+        VStack(alignment: .leading, spacing: 14) {
+            if showStepper {
+                progressIndicator
             }
-            HStack {
-                Spacer()
-                Button(action: submit) {
-                    Text("提交")
+            if let q = currentQuestion {
+                questionBlock(index: currentIndex, question: q)
+                    .id(currentIndex)
+            }
+            navigationBar
+        }
+        .focusable()
+        .focused($keyboardFocused)
+        .onAppear {
+            // 多题场景自动获焦，让用户立即可用键盘 ← → 翻页；单题不抢焦点，
+            // 避免不必要地把焦点从终端拉走。
+            if showStepper { keyboardFocused = true }
+        }
+        .onKeyPress(.leftArrow) {
+            goPrev()
+            return .handled
+        }
+        .onKeyPress(.rightArrow) {
+            goNext()
+            return .handled
+        }
+        .onKeyPress(.return) {
+            // 末题且已答完所有问题时 Enter 触发提交；其他情况让事件冒泡
+            // （含 TextField 获焦时按 Enter — 此时焦点不在卡片父层，
+            // onKeyPress 不会被调用）。
+            if isLast && canSubmit {
+                submit()
+                return .handled
+            }
+            return .ignored
+        }
+        .animation(.easeInOut(duration: 0.15), value: currentIndex)
+    }
+
+    // MARK: 翻页辅助
+
+    /// index 越界的单点防御（getter 内 guard 兜底）。
+    /// questions 数组来自 `let request`，view 生命周期内不可变，因此不再
+    /// 用 `onChange(of: totalCount)` 做 clamp（避免死分支）。
+    private var currentQuestion: AskQuestionItem? {
+        guard currentIndex >= 0, currentIndex < questions.count else { return nil }
+        return questions[currentIndex]
+    }
+
+    private func goPrev() {
+        guard !isFirst else { return }
+        currentIndex -= 1
+    }
+
+    private func goNext() {
+        guard !isLast else { return }
+        currentIndex += 1
+    }
+
+    // MARK: 顶部进度指示
+
+    private var progressIndicator: some View {
+        HStack(spacing: 0) {
+            Spacer()
+            Text("\(currentIndex + 1) / \(totalCount)")
+                .font(AppFont.ui(size: 12, weight: .semibold))
+                .foregroundColor(palette.textMuted)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(palette.bgInset)
+                .cornerRadius(10)
+        }
+    }
+
+    // MARK: 底部导航栏
+
+    @ViewBuilder
+    private var navigationBar: some View {
+        HStack(spacing: 12) {
+            if showStepper {
+                Button(action: goPrev) {
+                    Text("← 上一题")
                         .font(AppFont.ui(size: 13, weight: .semibold))
-                        .foregroundColor(palette.accentFg)
-                        .padding(.horizontal, 22)
-                        .padding(.vertical, 9)
-                        .background(canSubmit ? palette.accent : palette.accent.opacity(0.4))
+                        .foregroundColor(isFirst ? palette.textFaint : palette.text)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(palette.bgInset.opacity(isFirst ? 0.5 : 1.0))
                         .cornerRadius(8)
                 }
                 .buttonStyle(.plain)
-                .disabled(!canSubmit)
+                .disabled(isFirst)
+                Spacer()
+                if isLast {
+                    submitButton
+                } else {
+                    Button(action: goNext) {
+                        Text("下一题 →")
+                            .font(AppFont.ui(size: 13, weight: .semibold))
+                            .foregroundColor(palette.accentFg)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 8)
+                            .background(palette.accent)
+                            .cornerRadius(8)
+                    }
+                    .buttonStyle(.plain)
+                }
+            } else {
+                Spacer()
+                submitButton
             }
         }
+    }
+
+    private var submitButton: some View {
+        Button(action: submit) {
+            Text("提交")
+                .font(AppFont.ui(size: 13, weight: .semibold))
+                .foregroundColor(palette.accentFg)
+                .padding(.horizontal, 22)
+                .padding(.vertical, 9)
+                .background(canSubmit ? palette.accent : palette.accent.opacity(0.4))
+                .cornerRadius(8)
+        }
+        .buttonStyle(.plain)
+        .disabled(!canSubmit)
     }
 
     // MARK: 单条 question 渲染

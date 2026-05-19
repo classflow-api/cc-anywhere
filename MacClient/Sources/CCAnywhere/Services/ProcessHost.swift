@@ -66,9 +66,12 @@ public final class ProcessHost: NSObject, ObservableObject {
             at: claudeProjectDir, includingPropertiesForKeys: nil))?
             .contains { $0.pathExtension == "jsonl" && !$0.lastPathComponent.hasPrefix("agent-") } ?? false
 
-        let args = hasHistory ? ["-c"] : []
+        // 历史模式（-c）+ 用户选择的 permission mode 一起传给 claude。
+        // 顺序不影响 claude CLI 解析；放在最后便于日志识别。
+        let permArgs = ["--permission-mode", tab.permissionMode.rawValue]
+        let args = (hasHistory ? ["-c"] : []) + permArgs
         let mode = hasHistory ? "-c (continue)" : "(new conversation)"
-        view.feed(text: "\u{1B}[36m[cc-anywhere] launching: \(exe) \(mode)\nin: \(tab.folder.path)\u{1B}[0m\r\n")
+        view.feed(text: "\u{1B}[36m[cc-anywhere] launching: \(exe) \(mode) --permission-mode \(tab.permissionMode.rawValue)\nin: \(tab.folder.path)\u{1B}[0m\r\n")
 
         view.startProcess(
             executable: exe,

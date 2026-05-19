@@ -114,6 +114,10 @@ private struct PendingAskRequest {
     let questions: [AskQuestionItem]?
     let toolName: String?
     let toolInput: AnyJSON?
+    // R-F5：子 agent 上下文（仅 tool_approval 类有值）
+    let parentToolUseIdForCard: String?
+    let subAgentSummary: String?
+    let isFromSubAgent: Bool?
 }
 
 // MARK: - HookIpcServer
@@ -132,6 +136,8 @@ public actor HookIpcServer {
     public weak var jsonlWatcher: HookIpcJsonlSink?
     /// Mac 端 AskQuestionCard 控制器。
     public weak var cardController: HookIpcCardSink?
+    /// 上报 Claude 活动状态变化（hook 收到 ask/progress_pre → working / notification idle → waiting）
+    public weak var activitySink: HookIpcActivitySink?
 
     private let tabRouter: HookIpcTabRouter
 
@@ -170,6 +176,19 @@ public actor HookIpcServer {
 
     public func setCardController(_ controller: HookIpcCardSink?) {
         self.cardController = controller
+    }
+
+    public func setActivitySink(_ sink: HookIpcActivitySink?) {
+        self.activitySink = sink
+    }
+
+    /// 报告 Claude 活动状态变化（hook 调用入口）。
+    /// 不在 actor 内做 UI 更新，由 sink 在 MainActor 上处理。
+    private func reportActivity(tabUUID: UUID, activity: String) {
+        guard let sink = activitySink else { return }
+        Task { @MainActor in
+            sink.setActivity(tabId: tabUUID, activity: activity)
+        }
     }
 
     public func isRunning() -> Bool { running }
@@ -313,7 +332,10 @@ public actor HookIpcServer {
                 allowOther: true,
                 questions: req.questions,
                 toolName: req.toolName,
-                toolInput: req.toolInput
+                toolInput: req.toolInput,
+                parentToolUseId: req.parentToolUseIdForCard,
+                subAgentSummary: req.subAgentSummary,
+                isFromSubAgent: req.isFromSubAgent
             )
             await MainActor.run {
                 ws.sendAskQuestionPending(payload)
@@ -526,14 +548,65 @@ public actor HookIpcServer {
         let toolUseId = req.toolUseId ?? ""
         let toolName = req.toolName ?? ""
         log.info("handleAsk: req=\(requestId) tool=\(toolName) toolUseId=\(toolUseId) tab=\(tabUUID)")
+        // PreToolUse hook 命中 = Claude 在调工具（或问问题）= 工作中
+        reportActivity(tabUUID: tabUUID, activity: "working")
 
         // 判定 askKind：AskUserQuestion → user_question；其它 → tool_approval
         let askKind: String = (toolName == "AskUserQuestion") ? "user_question" : "tool_approval"
+
+        // 与 Claude permission mode 对齐：tool_approval 类（PreToolUse 拦截 Bash/Edit/...）
+        // 在高权限 mode（acceptEdits/auto/dontAsk/bypassPermissions）下直接 auto-allow，
+        // 不弹 Mac 卡片、不推手机端 —— 用户已经明确授信 Claude 自决工具。
+        // user_question 类（Claude 主动调 AskUserQuestion 工具问用户）始终走完整流程，
+        // 这是 Claude 自己想问的，与权限模式无关。
+        if askKind == "tool_approval" {
+            let mode = tabRouter.permissionMode(forTabIdString: tabUUID.uuidString)
+                ?? PermissionMode.default.rawValue
+            let highTrustModes: Set<String> = [
+                PermissionMode.acceptEdits.rawValue,
+                PermissionMode.auto.rawValue,
+                PermissionMode.dontAsk.rawValue,
+                PermissionMode.bypassPermissions.rawValue,
+            ]
+            if highTrustModes.contains(mode) {
+                log.info("handleAsk auto-allow (mode=\(mode)): req=\(requestId) tool=\(toolName)")
+                let resp = HookIpcResponseAsk.toolApproval(
+                    decision: "allow",
+                    reason: "permission_mode=\(mode)"
+                )
+                await Self.sendResponseAsk(connection: connection, response: resp)
+                connection.close()
+                return
+            }
+        }
 
         // 解析 questions（如果是 user_question）
         var questions: [AskQuestionItem]? = nil
         if askKind == "user_question", let toolInput = req.toolInput {
             questions = parseQuestions(from: toolInput)
+        }
+
+        // R-F5-001 / R-F5-004：tool_approval 类卡片注入子 agent 上下文。
+        // 反查路径：hook stdin 的 sessionId → JSONLWatcher.activeSubAgents
+        // → SubAgentMeta（含 parentToolUseId + 父 Task prompt 摘要）。
+        // 注：findSubAgent 内部用 queue.sync 串行化（线程安全），不需 await。
+        // R-F7-001 / R-F7-002（permission mode 继承）：本路径**不**做改动 ——
+        // 子 agent 内部触发 hook bridge 时，bridge Python 是父 claude 子进程
+        // fork 出来的，CC_ANYWHERE_TAB_ID env 必然继承父 tab；handleAsk line
+        // 555-573 的 auto-allow 走 `tabRouter.permissionMode(forTabIdString:)`
+        // 查的就是父 tab 的 mode → permission mode 继承默认成立。
+        var parentToolUseIdForCard: String? = nil
+        var subAgentSummary: String? = nil
+        var isFromSubAgent: Bool? = nil
+        if askKind == "tool_approval", let hookSessionId = req.sessionId {
+            if let meta = jsonlWatcher?.findSubAgent(tabId: tabUUID, sessionId: hookSessionId) {
+                parentToolUseIdForCard = meta.parentToolUseId
+                subAgentSummary = meta.promptSummary
+                isFromSubAgent = true
+                log.info("ask sub-agent context hit: req=\(requestId) sessionId=\(hookSessionId) parentToolUseId=\(meta.parentToolUseId ?? "<unmatched>")")
+            } else {
+                log.debug("ask no sub-agent context: req=\(requestId) sessionId=\(hookSessionId) (parent session tool call)")
+            }
         }
 
         // 注册 pending continuation；continuation 在 resolveAsk / reapExpired 内 resume
@@ -549,7 +622,10 @@ public actor HookIpcServer {
                 answered: false,
                 questions: questions,
                 toolName: req.toolName,
-                toolInput: req.toolInput
+                toolInput: req.toolInput,
+                parentToolUseIdForCard: parentToolUseIdForCard,
+                subAgentSummary: subAgentSummary,
+                isFromSubAgent: isFromSubAgent
             )
             pendingRequests[requestId] = pending
 
@@ -594,7 +670,10 @@ public actor HookIpcServer {
                     allowOther: true,
                     questions: questions,
                     toolName: req.toolName,
-                    toolInput: outboundToolInput
+                    toolInput: outboundToolInput,
+                    parentToolUseId: parentToolUseIdForCard,
+                    subAgentSummary: subAgentSummary,
+                    isFromSubAgent: isFromSubAgent
                 )
                 Task { @MainActor in
                     ws.sendAskQuestionPending(payload)
@@ -614,6 +693,8 @@ public actor HookIpcServer {
         if !toolUseId.isEmpty {
             jsonlWatcher?.markHookPushed(toolUseId: toolUseId)
         }
+        // PreToolUse (Bash/Write/Edit progress) = Claude 在执行工具 = 工作中
+        reportActivity(tabUUID: tabUUID, activity: "working")
         if let ws = wsClient, let toolInput = req.toolInput {
             // R-F2-004：长字段截断 200 字符（带宽 + 隐私保护）
             let truncated = Self.truncateToolInput(toolInput, maxLen: 200)
@@ -651,14 +732,19 @@ public actor HookIpcServer {
     }
 
     private func handleNotification(req: HookIpcRequest, tabUUID: UUID, connection: IpcConn) async {
+        let notifType = req.notificationType ?? "idle"
         if let ws = wsClient {
             let payload = NotificationPayload(
                 tabId: tabUUID.uuidString,
-                notificationType: req.notificationType ?? "idle",
+                notificationType: notifType,
                 title: req.title ?? "Claude",
                 message: req.notification ?? ""
             )
             await MainActor.run { ws.sendNotification(payload) }
+        }
+        // idle notification = Claude 进入等待用户输入状态
+        if notifType == "idle" {
+            reportActivity(tabUUID: tabUUID, activity: "waiting")
         }
         await Self.sendResponse(connection: connection, json: [:])
         connection.close()

@@ -90,6 +90,24 @@ public struct TabSummary: Codable, Sendable {
     }
 }
 
+/// `tab.activity` payload — mac → server → phone，按 tab 推送 Claude 活动状态变化。
+/// Mac 端只在 status 真发生变化时推（增量），避免每条 hook event 都广播全表。
+public struct TabActivityPayload: Codable, Sendable {
+    public let tabId: String
+    /// "working" | "waiting"
+    public let activity: String
+
+    public init(tabId: String, activity: String) {
+        self.tabId = tabId
+        self.activity = activity
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case tabId = "tab_id"
+        case activity
+    }
+}
+
 public struct TabChangedPayload: Codable, Sendable {
     public let tab: TabSummary
     public let action: String   // "added" | "removed" | "renamed"
@@ -234,6 +252,10 @@ public struct AskQuestionPendingPayload: Codable, Sendable {
     public let questions: [AskQuestionItem]?
     public let toolName: String?
     public let toolInput: AnyJSON?
+    // ⊕ R-F5：子 agent 上下文（仅 isFromSubAgent=true 时携带；旧版客户端忽略）
+    public let parentToolUseId: String?
+    public let subAgentSummary: String?
+    public let isFromSubAgent: Bool?
 
     public init(requestId: String,
                 tabId: String,
@@ -242,7 +264,10 @@ public struct AskQuestionPendingPayload: Codable, Sendable {
                 allowOther: Bool,
                 questions: [AskQuestionItem]? = nil,
                 toolName: String? = nil,
-                toolInput: AnyJSON? = nil) {
+                toolInput: AnyJSON? = nil,
+                parentToolUseId: String? = nil,
+                subAgentSummary: String? = nil,
+                isFromSubAgent: Bool? = nil) {
         self.requestId = requestId
         self.tabId = tabId
         self.toolUseId = toolUseId
@@ -251,6 +276,9 @@ public struct AskQuestionPendingPayload: Codable, Sendable {
         self.questions = questions
         self.toolName = toolName
         self.toolInput = toolInput
+        self.parentToolUseId = parentToolUseId
+        self.subAgentSummary = subAgentSummary
+        self.isFromSubAgent = isFromSubAgent
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -262,6 +290,9 @@ public struct AskQuestionPendingPayload: Codable, Sendable {
         case questions
         case toolName = "tool_name"
         case toolInput = "tool_input"
+        case parentToolUseId = "parent_tool_use_id"
+        case subAgentSummary = "sub_agent_summary"
+        case isFromSubAgent = "is_from_sub_agent"
     }
 }
 
