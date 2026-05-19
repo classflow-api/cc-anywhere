@@ -290,6 +290,12 @@ class _MessageCardListState extends ConsumerState<MessageCardList> {
       case MessageKind.thinking:
         return ThinkingCard(key: ValueKey(m.uuid), message: m);
       case MessageKind.toolUse:
+        // R-T1-006:TodoWrite 工具的 ToolUseCard 消音(主 session 的 todos 已经
+        // 进入 TodoPanel 顶部 panel 显示,聊天流再渲染会变成重复/噪音)。
+        // 子 agent 内的 TodoWrite 走 SubAgentFoldedBlock 渲染,不会到这里。
+        if (m.toolName == 'TodoWrite') {
+          return const SizedBox.shrink();
+        }
         return ToolUseCard(
             key: ValueKey(m.uuid), message: m, tabId: widget.tabId);
       case MessageKind.toolResult:

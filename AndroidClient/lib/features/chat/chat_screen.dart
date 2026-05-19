@@ -13,6 +13,7 @@ import '../../widgets/tool_progress_indicator.dart';
 import 'widgets/ask_user_question_card_realtime.dart';
 import 'widgets/input_bar.dart';
 import 'widgets/message_card_list.dart';
+import 'widgets/todo_panel.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final String tabId;
@@ -99,6 +100,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         child: Column(
           children: [
             _Header(tab: tab),
+            // R-T1:TodoWrite 任务面板 - 顶部固定折叠 panel,镜像 Mac TUI 体验。
+            // todos 为空时 widget 自身返回 SizedBox.shrink() 不占空间(R-T1-008)。
+            TodoPanel(tabId: widget.tabId),
             Expanded(
               child: chatAsync.when(
                 data: (s) => MessageCardList(

@@ -7,6 +7,7 @@ import 'package:uuid/uuid.dart';
 import '../features/chat/widgets/sub_agent_folded_block.dart';
 import '../models/message.dart';
 import '../models/protocol_message.dart';
+import '../models/todo_item.dart';
 import '../services/dedup_service.dart';
 import 'image_ref_store.dart';
 import 'image_upload_service.dart';
@@ -23,6 +24,10 @@ class TabChatState {
   final String? lastError;
   /// 用户发送后等待 Claude 响应中。收到 assistant 消息或 tool_use 后清零。
   final bool assistantTyping;
+  /// R-T1-001 / R-T1-002 / R-T1-005：主 session（isSidechain=false）最新一次
+  /// TodoWrite 的 todos 快照。每次 TodoWrite 覆盖式更新，按 tabId 隔离。
+  /// 空列表 = 当前 Tab 无任务清单（panel 隐藏，R-T1-008）。
+  final List<TodoItem> todos;
 
   const TabChatState({
     required this.tabId,
@@ -31,6 +36,7 @@ class TabChatState {
     this.hasMore = true,
     this.lastError,
     this.assistantTyping = false,
+    this.todos = const [],
   });
 
   TabChatState copyWith({
@@ -39,6 +45,7 @@ class TabChatState {
     bool? hasMore,
     String? lastError,
     bool? assistantTyping,
+    List<TodoItem>? todos,
   }) =>
       TabChatState(
         tabId: tabId,
@@ -47,6 +54,7 @@ class TabChatState {
         hasMore: hasMore ?? this.hasMore,
         lastError: lastError,
         assistantTyping: assistantTyping ?? this.assistantTyping,
+        todos: todos ?? this.todos,
       );
 }
 
@@ -564,6 +572,11 @@ class ChatRepository {
     final timestamps = _subAgentTimestamps.putIfAbsent(tabId, () => {});
     final sidechainUuids = _sidechainUuidIndex.putIfAbsent(tabId, () => {});
 
+    // 第二轮 review 🟡-2:历史回放路径下 batch 收集 TodoWrite,
+    // 一批 N 条只在循环结束时 emit 一次（避免 panel 闪烁与无谓 rebuild）。
+    // 实时路径仍每条立即 emit（保证 mac 上 Claude 实时更新时手机也实时反映）。
+    List<TodoItem>? batchedTodos;
+
     for (final raw in raws) {
       final isSidechain = (raw['isSidechain'] as bool?) ?? false;
       final uuid = raw['uuid'] as String?;
@@ -603,7 +616,25 @@ class ChatRepository {
         continue;
       }
 
-      // 非 sidechain：先探测 Task tool_use / tool_result，再决定是否进主流。
+      // 非 sidechain：探测 TodoWrite,把 todos 吸入主 panel。
+      // R-T1-001 / R-T1-007：仅主 session 的 TodoWrite 进主 panel,子 agent 内
+      // TodoWrite 走 sidechain 分支（已在前面 continue），永不到这里。
+      //
+      // 第一轮 review 🟡-2：原实现在命中后 continue 把整条 raw 丢弃,若同条
+      // message.content 含 text + TodoWrite 会丢 text。改为 raw 仍进 passthrough,
+      // 消音逻辑下沉到 message_card_list 渲染层（R-T1-006 在渲染层执行）。
+      //
+      // 第二轮 review 🟡-2：历史回放路径下 batch 收集,循环外 emit 一次,
+      // 避免一次性收到 N 条历史 TodoWrite 触发 N 次 panel rebuild。
+      final todoUpdate = _detectTodoWrite(raw);
+      if (todoUpdate != null) {
+        if (isHistory) {
+          batchedTodos = todoUpdate;
+        } else {
+          _setTodos(tabId, todoUpdate);
+        }
+      }
+
       // 第二轮 review 🟡-2：tool_result 已被折叠块 finalResult 吸收时跳过主流，
       // 避免"主流 ToolResultCard + 折叠块内 _buildFinalResult"双重渲染。
       var absorbedByBlock = false;
@@ -659,6 +690,11 @@ class ChatRepository {
       if (!absorbedByBlock) {
         passthrough.add(raw);
       }
+    }
+
+    // 第二轮 review 🟡-2:历史回放路径在循环末尾统一 emit 最后一次 todos
+    if (batchedTodos != null) {
+      _setTodos(tabId, batchedTodos);
     }
 
     return (passthroughRaws: passthrough, newPlaceholders: newPlaceholders);
@@ -732,6 +768,38 @@ class ChatRepository {
 
   /// 解析一条非 sidechain JSONL record，查 message.content 中是否含 Task
   /// tool_use 或 tool_result，提取信息。返回 null 表示与 Task 无关。
+  /// R-T1-001 ~ R-T1-011：识别 TodoWrite tool_use 的 input.todos 数组。
+  /// 命中返回解析后的 todos 列表（caller 用 _setTodos 覆盖当前 Tab 的 panel 状态）；
+  /// 未命中返回 null。
+  ///
+  /// 第一轮 review 🟡-1：input.todos 字段缺失 / 非 List 时返回 null（**不**更新 panel），
+  /// 否则 TodoItem.parseList 会返回 [] 把已有的 panel 清空，与 §6 safe degradation 不符。
+  /// 仅当 todos 字段存在且能成功解析出 ≥0 条有效项才更新 panel。
+  List<TodoItem>? _detectTodoWrite(Map<String, dynamic> raw) {
+    try {
+      final inner = raw['message'];
+      if (inner is! Map) return null;
+      final content = inner['content'];
+      if (content is! List) return null;
+      for (final item in content) {
+        if (item is! Map) continue;
+        if (item['type'] != 'tool_use' || item['name'] != 'TodoWrite') continue;
+        final input = item['input'];
+        if (input is! Map) continue;
+        final todosField = input['todos'];
+        if (todosField is! List) return null;  // 字段缺失/非 List → safe degradation
+        return TodoItem.parseList(todosField);
+      }
+    } catch (_) {/* 解析失败静默忽略 */}
+    return null;
+  }
+
+  /// R-T1-005：同一 Tab 内连续多次 TodoWrite 仅保留最新状态（覆盖式更新）。
+  void _setTodos(String tabId, List<TodoItem> todos) {
+    final cur = _state[tabId] ?? TabChatState(tabId: tabId, messages: const []);
+    _update(tabId, cur.copyWith(todos: todos));
+  }
+
   _TaskRecordDetection? _detectTaskInRecord(Map<String, dynamic> raw) {
     try {
       final inner = raw['message'];
