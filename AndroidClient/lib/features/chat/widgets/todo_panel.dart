@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/chat_repository.dart';
+import '../../../data/logger.dart';
 import '../../../models/todo_item.dart';
 import '../../../theme/color_tokens.dart';
 
@@ -27,18 +28,28 @@ class _TodoPanelState extends ConsumerState<TodoPanel> {
   Widget build(BuildContext context) {
     final t = context.tokens;
     final chatAsync = ref.watch(tabChatStateProvider(widget.tabId));
-    final todos = chatAsync.valueOrNull?.todos ?? const <TodoItem>[];
+    final tasksMap = chatAsync.valueOrNull?.tasks ?? const <String, TodoItem>{};
+    // 诊断:每次 build 打印当前拿到的 tasks 状态摘要
+    final dump = tasksMap.entries.map((e) => '#${e.key}=${e.value.status.name}').join(',');
+    AppLogger.instance.debug('TodoPanel',
+        'build tab=${widget.tabId} async=${chatAsync.runtimeType} hasValue=${chatAsync.hasValue} tasks=[$dump]');
 
-    // R-T1-008:空 todos 隐藏整个 widget,不占空间
-    if (todos.isEmpty) return const SizedBox.shrink();
+    // R-T1-008:空 tasks 隐藏整个 widget,不占空间
+    if (tasksMap.isEmpty) return const SizedBox.shrink();
 
+    // 按 taskId 数值排序(TaskCreate 返回的 "Task #1/#2/..." 自然顺序)
+    final todos = tasksMap.values.toList()
+      ..sort((a, b) =>
+          (int.tryParse(a.taskId) ?? 0).compareTo(int.tryParse(b.taskId) ?? 0));
     final completed = todos.where((e) => e.status == TodoStatus.completed).length;
     final total = todos.length;
-    final inProgress = todos.firstWhere(
-      (e) => e.status == TodoStatus.inProgress,
-      orElse: () => const TodoItem(content: '', status: TodoStatus.pending),
-    );
-    final hasInProgress = inProgress.content.isNotEmpty;
+    // 全部完成时自动隐藏 panel(用户已经知道结果,继续显示会占用屏幕空间)。
+    // 下次新增 TaskCreate 时 panel 会自动重新出现。
+    if (completed == total) return const SizedBox.shrink();
+    final inProgressMatches = todos.where((e) => e.status == TodoStatus.inProgress);
+    final hasInProgress = inProgressMatches.isNotEmpty;
+    final inProgressSubject =
+        hasInProgress ? inProgressMatches.first.subject : null;
 
     return Container(
       margin: const EdgeInsets.fromLTRB(12, 4, 12, 0),
@@ -51,7 +62,7 @@ class _TodoPanelState extends ConsumerState<TodoPanel> {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          _buildHeader(t, completed, total, hasInProgress ? inProgress.content : null),
+          _buildHeader(t, completed, total, inProgressSubject),
           // R-T1-010:200ms 折叠/展开动画
           AnimatedSize(
             duration: const Duration(milliseconds: 200),
@@ -139,11 +150,13 @@ class _TodoPanelState extends ConsumerState<TodoPanel> {
   }
 
   /// R-T1-004:每项 icon + 文本。三态颜色 + 已完成 strikethrough。
+  /// deleted 状态已被 ChatRepository 从 map 中移除,这里只渲染余下三态。
   Widget _buildRow(ColorTokens t, TodoItem todo) {
     final (icon, color) = switch (todo.status) {
       TodoStatus.pending => (Icons.radio_button_unchecked, t.textMuted),
       TodoStatus.inProgress => (Icons.timelapse, t.accent),
       TodoStatus.completed => (Icons.check_circle, t.success),
+      TodoStatus.deleted => (Icons.cancel, t.danger),  // 理论上不到这里
     };
     final isDone = todo.status == TodoStatus.completed;
     return Padding(
@@ -158,7 +171,7 @@ class _TodoPanelState extends ConsumerState<TodoPanel> {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              todo.content,
+              todo.subject,
               style: TextStyle(
                 color: isDone ? t.textMuted : t.text,
                 fontSize: 12.5,

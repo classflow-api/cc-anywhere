@@ -123,9 +123,75 @@ public final class HistoryBridge {
         }()
         // Take last `limit` (most recent before).
         let tailStart = max(0, filtered.count - limit)
-        let tail = filtered[tailStart...]
+        let tail = Array(filtered[tailStart...])
         let hasMore = tailStart > 0
-        return (tail.map { $0.1 }, hasMore)
+
+        // ⊕ TodoPanel 修复(2026-05-19):Task* 工具(TaskCreate/TaskUpdate/TaskList)
+        // 完全 bypass PreToolUse/PostToolUse hooks(Claude Code issue #20243),
+        // 手机端只能靠 JSONL 旁观通道拿任务状态。但 limit 截断会让 TaskCreate
+        // 落到 tail 之外,后续 TaskUpdate 找不到对应 task 没法显示 panel。
+        //
+        // 解决:扫描 filtered 全集(不受 limit),把所有含 Task* tool_use 的 raw
+        // 单独加进结果(uuid dedup,避免与 tail 重复)。手机端 _mergeMessages 同样
+        // 按 uuid dedup,message_card_list 渲染层对 Task* 消音,**不**会双卡。
+        let tailUuids: Set<String> = Set(tail.compactMap { Self.extractUuid($0.1) })
+        let extraTaskRaws: [(Date?, AnyJSON)] = filtered.filter { entry in
+            guard let uuid = Self.extractUuid(entry.1),
+                  !tailUuids.contains(uuid),
+                  Self.containsTaskTool(entry.1) else { return false }
+            return true
+        }
+        let combined = (tail + extraTaskRaws)
+            .sorted { ($0.0 ?? .distantPast) < ($1.0 ?? .distantPast) }
+        return (combined.map { $0.1 }, hasMore)
+    }
+
+    /// 提取 JSONL record 的 uuid 字段(用于跨 tail / extraTaskRaws dedup)。
+    nonisolated private static func extractUuid(_ any: AnyJSON) -> String? {
+        guard case .object(let obj) = any,
+              case .string(let uuid) = obj["uuid"] ?? .null else { return nil }
+        return uuid
+    }
+
+    /// 判定 raw 是否含 TaskCreate / TaskUpdate / TaskList 的 tool_use,或者
+    /// 对应的 tool_result(按 tool_use_id 关联,但这里简化为"含字符串 Task #N
+    /// 的 tool_result")。
+    nonisolated private static func containsTaskTool(_ any: AnyJSON) -> Bool {
+        guard case .object(let obj) = any,
+              case .object(let msg) = obj["message"] ?? .null,
+              case .array(let contents) = msg["content"] ?? .null else { return false }
+        for c in contents {
+            guard case .object(let item) = c else { continue }
+            // tool_use 分支:name 是 TaskCreate / TaskUpdate / TaskList
+            if case .string("tool_use") = item["type"] ?? .null,
+               case .string(let name) = item["name"] ?? .null,
+               (name == "TaskCreate" || name == "TaskUpdate" || name == "TaskList") {
+                return true
+            }
+            // tool_result 分支:文本含 "Task #N created" 字样(对应 TaskCreate 的回执)
+            if case .string("tool_result") = item["type"] ?? .null {
+                if let text = Self.toolResultText(item["content"] ?? .null),
+                   text.contains("Task #") {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    /// tool_result.content 可能是 String 或 [{type:text,text:...}],
+    /// 统一抽成纯字符串。
+    nonisolated private static func toolResultText(_ any: AnyJSON) -> String? {
+        if case .string(let s) = any { return s }
+        guard case .array(let arr) = any else { return nil }
+        var buf = ""
+        for c in arr {
+            guard case .object(let item) = c,
+                  case .string("text") = item["type"] ?? .null,
+                  case .string(let t) = item["text"] ?? .null else { continue }
+            buf += t
+        }
+        return buf.isEmpty ? nil : buf
     }
 
     /// 历史回放就地匹配（agentId → parentToolUseId）。

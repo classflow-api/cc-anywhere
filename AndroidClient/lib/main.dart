@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/date_symbol_data_local.dart';
 
 import 'app.dart';
+import 'data/logger.dart';
 
 /// 让 Image.network / dart:io HttpClient 都接受 server 自签证书。
 /// cc-anywhere 是私有部署工具,Server 用户的内网/自有 VPS 用自签证书是常态;
@@ -31,5 +32,8 @@ void main() async {
     ),
   );
   await initializeDateFormatting('zh_CN');
+  // 启动文件日志 mirror,adb pull 可拉取:
+  // adb pull /sdcard/Android/data/com.yoolines.ccanywhere.cc_anywhere/files/cc-anywhere.log
+  await AppLogger.instance.initFileSink();
   runApp(const ProviderScope(child: CcAnywhereApp()));
 }

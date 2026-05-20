@@ -261,18 +261,17 @@ class _MessageCardListState extends ConsumerState<MessageCardList> {
   Widget _buildCard(Message m) {
     switch (m.kind) {
       case MessageKind.subAgentBlock:
-        // L4：placeholder Message uuid 形如 'subagent-<tabId>-<key>'，
-        // 反查 ChatRepository._subAgentBlocks 拿到真正的 block 数据后渲染。
-        // 解析失败（理论不发生）退化为空 SizedBox，避免空卡污染主流。
+        // 运行中 sub-agent 由底部 SubAgentRunnerBar 显示(跟输入框分隔开);
+        // 已完成/失败的 sub-agent 留在消息流原位置展示(folded block 折叠态)。
         final prefix = 'subagent-${widget.tabId}-';
-        if (!m.uuid.startsWith(prefix)) {
-          return const SizedBox.shrink();
-        }
+        if (!m.uuid.startsWith(prefix)) return const SizedBox.shrink();
         final key = m.uuid.substring(prefix.length);
         final block = ref
             .read(chatRepositoryProvider)
             .lookupSubAgentBlock(widget.tabId, key);
         if (block == null) return const SizedBox.shrink();
+        // 运行中 → 隐藏(底部 bar 显示)
+        if (block.status == 'running') return const SizedBox.shrink();
         return SubAgentFoldedBlock(key: ValueKey(m.uuid), block: block);
       case MessageKind.text:
         if (m.role == MessageRole.user) {
@@ -290,15 +289,39 @@ class _MessageCardListState extends ConsumerState<MessageCardList> {
       case MessageKind.thinking:
         return ThinkingCard(key: ValueKey(m.uuid), message: m);
       case MessageKind.toolUse:
-        // R-T1-006:TodoWrite 工具的 ToolUseCard 消音(主 session 的 todos 已经
-        // 进入 TodoPanel 顶部 panel 显示,聊天流再渲染会变成重复/噪音)。
-        // 子 agent 内的 TodoWrite 走 SubAgentFoldedBlock 渲染,不会到这里。
-        if (m.toolName == 'TodoWrite') {
+        // R-T1-006:任务三件套(TaskCreate/TaskUpdate/TaskList)消音 — todos 已经
+        // 进入 TodoPanel 顶部固定 panel,聊天流再渲染重复/噪音。子 agent 内的
+        // Task* 走 SubAgentFoldedBlock 渲染(_ChildLine 字符串预览),不到这里。
+        const todoToolNames = {'TaskCreate', 'TaskUpdate', 'TaskList'};
+        // Agent / Task 是 sub-agent 工具,走 SubAgentBlock(底部 runner bar 或
+        // 消息流 folded block done 态)渲染,不在主流再画一遍黄色 ToolUseCard。
+        const subAgentToolNames = {'Agent', 'Task'};
+        if (todoToolNames.contains(m.toolName) ||
+            subAgentToolNames.contains(m.toolName)) {
           return const SizedBox.shrink();
         }
         return ToolUseCard(
             key: ValueKey(m.uuid), message: m, tabId: widget.tabId);
       case MessageKind.toolResult:
+        // 跟随 tool_use 的消音规则:TaskCreate/TaskUpdate/TaskList + Agent/Task
+        // 的 tool_result 也不在主流渲染(顶部 TodoPanel / 底部 SubAgentRunnerBar
+        // 已经展示对应信息,主流再画一遍是冗余)。
+        // tool_result Message 关联到 tool_use 用的字段是 toolUseRefId(非 toolUseId)。
+        final refId = m.toolUseRefId;
+        if (refId != null) {
+          for (final ref in widget.state.messages) {
+            if (ref.kind == MessageKind.toolUse && ref.toolUseId == refId) {
+              const muted = {
+                'TaskCreate', 'TaskUpdate', 'TaskList',
+                'Agent', 'Task',
+              };
+              if (muted.contains(ref.toolName)) {
+                return const SizedBox.shrink();
+              }
+              break;
+            }
+          }
+        }
         return ToolResultCard(key: ValueKey(m.uuid), message: m);
       case MessageKind.attachment:
         return AttachmentCard(key: ValueKey(m.uuid), message: m);

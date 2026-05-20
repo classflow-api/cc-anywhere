@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../data/chat_repository.dart';
+import '../../../data/logger.dart';
 import '../../../models/message.dart';
 import '../../../theme/color_tokens.dart';
 
@@ -60,17 +61,32 @@ class _ToolUseCardState extends ConsumerState<ToolUseCard> {
     });
   }
 
+  /// mac 端 settings.json PreToolUse matcher 是 `Bash|Write|Edit`,
+  /// 只有这三种(M4 ask 模式)才会走批准流程。其他工具(Agent / Task* /
+  /// Read / Glob / WebFetch ...)直接执行,不需要用户批准。
+  static const _dangerousTools = {'Bash', 'Write', 'Edit', 'NotebookEdit'};
+
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
     final m = widget.message;
-    final showActions = m.toolStatus == ToolUseStatus.pending && _localStatus == null;
+    final isDangerousTool = _dangerousTools.contains(m.toolName);
+    // 仅危险工具的 pending 状态才显示"批准/拒绝/总是"按钮 + "待批准"文案;
+    // 其他工具的 pending 是"正在运行,等 tool_result 回来"的中间态。
+    final showActions = isDangerousTool &&
+        m.toolStatus == ToolUseStatus.pending &&
+        _localStatus == null;
+    AppLogger.instance.debug('ToolUseCard',
+        'build toolName=${m.toolName} toolStatus=${m.toolStatus} isDangerous=$isDangerousTool showActions=$showActions _localStatus=$_localStatus');
     final stateLabel = switch (m.toolStatus) {
       ToolUseStatus.approved => '已批准',
       ToolUseStatus.rejected => '已拒绝',
       ToolUseStatus.executed => '已执行',
       _ => null,
-    } ?? (_localStatus != null ? '处理中…' : null);
+    } ??
+        (_localStatus != null
+            ? '处理中…'
+            : (isDangerousTool ? '待批准' : '运行中'));
 
     final input = m.toolInput ?? const {};
     final filePath = (input['file_path'] ?? input['path'] ?? '') as String?;
@@ -92,7 +108,9 @@ class _ToolUseCardState extends ConsumerState<ToolUseCard> {
                 Row(
                   children: [
                     Text(
-                      '${m.toolName ?? 'Tool'} · ${stateLabel ?? '待批准'}',
+                      // stateLabel 由 build 头部按 isDangerousTool 决定默认值
+                      // (危险工具 → "待批准",其他 → "运行中"),这里直接拼即可。
+                      '${m.toolName ?? 'Tool'} · ${stateLabel ?? '运行中'}',
                       style: TextStyle(
                         fontSize: 11,
                         fontWeight: FontWeight.w700,

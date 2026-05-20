@@ -1,15 +1,21 @@
 // Copyright (c) 2026 北京友联互动信息技术有限公司. All rights reserved.
 //
 // todo_item.dart
-// Claude Code TodoWrite 工具维护的单条任务项。三态：pending / in_progress / completed。
-// 详见需求规格 R-T1-001 ~ R-T1-011。
+// Claude Code 2.0+ 任务工具三件套(TaskCreate/TaskUpdate/TaskList)的数据模型。
+//
+// 历史说明: 旧版 Claude Code 用 TodoWrite(一次性覆盖整个 todos 列表),
+// 2.0.77+ 改为 TaskCreate/TaskUpdate/TaskList 增量操作。本类名保留 "Todo"
+// 仅为避免 import 路径破坏式重命名,实际承载 Task 数据。
+//
+// 四态: pending / in_progress / completed / deleted。详见 R-T1-001 ~ R-T1-011。
 
 enum TodoStatus {
   pending,
   inProgress,
-  completed;
+  completed,
+  deleted;
 
-  /// 从 JSONL record 字符串解析。未知值返回 null（safe degradation）。
+  /// 从 TaskUpdate input.status 字符串解析。未知值返回 null(safe degradation)。
   static TodoStatus? tryParse(String? s) {
     switch (s) {
       case 'pending':
@@ -18,6 +24,8 @@ enum TodoStatus {
         return TodoStatus.inProgress;
       case 'completed':
         return TodoStatus.completed;
+      case 'deleted':
+        return TodoStatus.deleted;
       default:
         return null;
     }
@@ -25,37 +33,24 @@ enum TodoStatus {
 }
 
 class TodoItem {
-  final String content;
+  /// Claude Code 分配的短 id,从 TaskCreate 的 tool_result("Task #N created")
+  /// 解析得到。TaskUpdate input.taskId 引用同一 id。
+  final String taskId;
+  final String subject;
   final TodoStatus status;
+  final String? activeForm;
 
   const TodoItem({
-    required this.content,
+    required this.taskId,
+    required this.subject,
     required this.status,
+    this.activeForm,
   });
 
-  /// 从 TodoWrite tool_use input.todos 单项解析。
-  /// 字段缺失 / 类型错误 / 未知 status → 返回 null（safe degradation，
-  /// 防止 Claude Code 升级字段名后整个 panel 崩溃）。
-  /// 注：Claude Code 当前 TodoWrite schema 仅 content / status / activeForm；
-  /// 不解析 activeForm（与 content 重复度高，UI 用 content 就够）。
-  static TodoItem? tryFrom(Map<String, dynamic> json) {
-    final content = json['content'];
-    if (content is! String || content.isEmpty) return null;
-    final status = TodoStatus.tryParse(json['status'] as String?);
-    if (status == null) return null;
-    return TodoItem(content: content, status: status);
-  }
-
-  /// 解析 TodoWrite tool_use input.todos 整个数组。
-  static List<TodoItem> parseList(dynamic todosField) {
-    if (todosField is! List) return const [];
-    final result = <TodoItem>[];
-    for (final item in todosField) {
-      if (item is Map) {
-        final parsed = TodoItem.tryFrom(item.cast<String, dynamic>());
-        if (parsed != null) result.add(parsed);
-      }
-    }
-    return result;
-  }
+  TodoItem copyWith({TodoStatus? status}) => TodoItem(
+        taskId: taskId,
+        subject: subject,
+        status: status ?? this.status,
+        activeForm: activeForm,
+      );
 }

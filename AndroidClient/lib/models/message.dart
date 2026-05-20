@@ -461,9 +461,14 @@ class Message {
   static DateTime _parseTs(dynamic v) {
     if (v is String) {
       final dt = DateTime.tryParse(v);
-      if (dt != null) return dt;
+      // Claude Code JSONL 写的是 ISO 8601 UTC ("2026-05-20T00:32:54.643Z"),
+      // DateTime.tryParse 解析后保留 isUtc=true。time_separator 等 widget
+      // 直接用 .year/.month/.hour 拿到的是 UTC 值,导致显示比本地早 8 小时。
+      // 统一转 toLocal() 让下游 UI 拿到本地时间。
+      if (dt != null) return dt.toLocal();
     }
     if (v is num) {
+      // fromMillisecondsSinceEpoch 默认 isUtc=false 已是本地,保持原样
       return DateTime.fromMillisecondsSinceEpoch(v.toInt());
     }
     return DateTime.now();

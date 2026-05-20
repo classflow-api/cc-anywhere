@@ -13,6 +13,7 @@ import '../../widgets/tool_progress_indicator.dart';
 import 'widgets/ask_user_question_card_realtime.dart';
 import 'widgets/input_bar.dart';
 import 'widgets/message_card_list.dart';
+import 'widgets/sub_agent_runner_bar.dart';
 import 'widgets/todo_panel.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
@@ -161,6 +162,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       );
                 },
               ),
+            // Sub-agent 运行状态栏 — 显示活跃子 agent 列表,点进去看详情。
+            // 仅在有 running 子 agent 时显示,跟输入框分隔开,不污染聊天流。
+            SubAgentRunnerBar(tabId: widget.tabId),
             InputBar(
               tabId: widget.tabId,
               enabled: inputEnabled,

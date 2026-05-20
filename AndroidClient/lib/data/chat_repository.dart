@@ -24,10 +24,11 @@ class TabChatState {
   final String? lastError;
   /// 用户发送后等待 Claude 响应中。收到 assistant 消息或 tool_use 后清零。
   final bool assistantTyping;
-  /// R-T1-001 / R-T1-002 / R-T1-005：主 session（isSidechain=false）最新一次
-  /// TodoWrite 的 todos 快照。每次 TodoWrite 覆盖式更新，按 tabId 隔离。
-  /// 空列表 = 当前 Tab 无任务清单（panel 隐藏，R-T1-008）。
-  final List<TodoItem> todos;
+  /// R-T1-001 / R-T1-002 / R-T1-005：主 session 任务计划状态。
+  /// 由 TaskCreate / TaskUpdate / TaskList 三件套增量维护(Claude Code 2.0+)。
+  /// key = taskId(从 TaskCreate tool_result "Task #N" 解析的字符串数字),
+  /// 按 tabId 隔离。空 map = 当前 Tab 无任务(panel 隐藏,R-T1-008)。
+  final Map<String, TodoItem> tasks;
 
   const TabChatState({
     required this.tabId,
@@ -36,7 +37,7 @@ class TabChatState {
     this.hasMore = true,
     this.lastError,
     this.assistantTyping = false,
-    this.todos = const [],
+    this.tasks = const {},
   });
 
   TabChatState copyWith({
@@ -45,7 +46,7 @@ class TabChatState {
     bool? hasMore,
     String? lastError,
     bool? assistantTyping,
-    List<TodoItem>? todos,
+    Map<String, TodoItem>? tasks,
   }) =>
       TabChatState(
         tabId: tabId,
@@ -54,8 +55,15 @@ class TabChatState {
         hasMore: hasMore ?? this.hasMore,
         lastError: lastError,
         assistantTyping: assistantTyping ?? this.assistantTyping,
-        todos: todos ?? this.todos,
+        tasks: tasks ?? this.tasks,
       );
+}
+
+/// TaskCreate tool_use 与 tool_result 配对的中间态。
+class _PendingTaskCreate {
+  final String subject;
+  final String? activeForm;
+  const _PendingTaskCreate({required this.subject, this.activeForm});
 }
 
 class ChatRepository {
@@ -82,6 +90,10 @@ class ChatRepository {
 
   // tabId -> uuid set（O(1) 去重）
   final Map<String, Set<String>> _uuidIndex = {};
+
+  // tabId -> { tool_use_id -> _PendingTaskCreate }
+  // TaskCreate 命中后等对应 tool_result(同 tool_use_id) 拿 "Task #N" 数字 id。
+  final Map<String, Map<String, _PendingTaskCreate>> _pendingTaskCreates = {};
 
   // L4 子 agent 聚合（R-F3-001 ~ R-F3-004）
   //
@@ -115,6 +127,28 @@ class ChatRepository {
   /// uuid 形如 `subagent-{tabId}-{key}`。
   SubAgentBlock? lookupSubAgentBlock(String tabId, String key) =>
       _subAgentBlocks[tabId]?[key];
+
+  // Sub-agent 列表 stream(底部 SubAgentRunnerBar 用)。每次 _preprocessSubAgent
+  // 末尾 / buffer timeout 后调 _notifySubAgents(tabId) emit 一份当前 blocks
+  // 的 snapshot。底部 bar 监听这个 stream 实时显示 running 子 agent。
+  final Map<String, StreamController<List<SubAgentBlock>>> _subAgentCtrls = {};
+
+  Stream<List<SubAgentBlock>> watchSubAgents(String tabId) {
+    final c = _subAgentCtrls.putIfAbsent(
+      tabId,
+      () => StreamController<List<SubAgentBlock>>.broadcast(),
+    );
+    Future<void>.microtask(() {
+      final list = _subAgentBlocks[tabId]?.values.toList() ?? const [];
+      if (!c.isClosed) c.add(list);
+    });
+    return c.stream;
+  }
+
+  void _notifySubAgents(String tabId) {
+    final list = _subAgentBlocks[tabId]?.values.toList() ?? const [];
+    _subAgentCtrls[tabId]?.add(list);
+  }
 
   /// 正在打开的 tabId（用于未读累计判断）
   String? _activeTabId;
@@ -430,6 +464,7 @@ class ChatRepository {
   }
 
   void _onInbound(ProtocolMessage m) {
+    _log.info('TaskPanel', '_onInbound type=${m.type}');
     // hook 实时桥接通道:统一在分发入口对 ask/progress 系列消息做 tool_use_id 去重。
     // 这三类协议的具体渲染逻辑由后续 T13/T14/T15 子 agent 合入,此处仅守门。
     switch (m.type) {
@@ -572,11 +607,6 @@ class ChatRepository {
     final timestamps = _subAgentTimestamps.putIfAbsent(tabId, () => {});
     final sidechainUuids = _sidechainUuidIndex.putIfAbsent(tabId, () => {});
 
-    // 第二轮 review 🟡-2:历史回放路径下 batch 收集 TodoWrite,
-    // 一批 N 条只在循环结束时 emit 一次（避免 panel 闪烁与无谓 rebuild）。
-    // 实时路径仍每条立即 emit（保证 mac 上 Claude 实时更新时手机也实时反映）。
-    List<TodoItem>? batchedTodos;
-
     for (final raw in raws) {
       final isSidechain = (raw['isSidechain'] as bool?) ?? false;
       final uuid = raw['uuid'] as String?;
@@ -589,8 +619,15 @@ class ChatRepository {
 
       if (isSidechain) {
         if (uuid != null) sidechainUuids.add(uuid);
-        // 优先 parentToolUseId；mac 端 promptHash 反查命中才注入此字段，否则
-        // fallback 用 agentId（孤儿模式占位）。
+        // Claude Code 启动时会预热 N 个虚拟 subagent(首条 user message
+        // content 是 "Warmup"),它们没真实 Task tool_use 关联,在手机端会变成
+        // 孤儿 SubAgentBlock 显示成 "Task 子 agent 运行中"误导用户。
+        // 探测首条内容是 "Warmup" 的 sidechain 整条丢弃,不进 buffer 也不进流。
+        if (_isWarmupSidechain(raw)) {
+          continue;
+        }
+        // 优先 parentToolUseId;mac 端 promptHash 反查命中才注入此字段,否则
+        // fallback 用 agentId(孤儿模式占位)。
         final parentId = raw['parent_tool_use_id'] as String?;
         final agentId = raw['agentId'] as String?;
         final key = parentId ?? agentId;
@@ -616,24 +653,13 @@ class ChatRepository {
         continue;
       }
 
-      // 非 sidechain：探测 TodoWrite,把 todos 吸入主 panel。
-      // R-T1-001 / R-T1-007：仅主 session 的 TodoWrite 进主 panel,子 agent 内
-      // TodoWrite 走 sidechain 分支（已在前面 continue），永不到这里。
+      // 非 sidechain:探测 TaskCreate / TaskUpdate / TaskList 三件套,增量
+      // 更新主 panel。R-T1-001 / R-T1-007:仅主 session 的 Task* 进主 panel,
+      // 子 agent 内的 Task* 走 sidechain 分支(前面已 continue),永不到这里。
       //
-      // 第一轮 review 🟡-2：原实现在命中后 continue 把整条 raw 丢弃,若同条
-      // message.content 含 text + TodoWrite 会丢 text。改为 raw 仍进 passthrough,
-      // 消音逻辑下沉到 message_card_list 渲染层（R-T1-006 在渲染层执行）。
-      //
-      // 第二轮 review 🟡-2：历史回放路径下 batch 收集,循环外 emit 一次,
-      // 避免一次性收到 N 条历史 TodoWrite 触发 N 次 panel rebuild。
-      final todoUpdate = _detectTodoWrite(raw);
-      if (todoUpdate != null) {
-        if (isHistory) {
-          batchedTodos = todoUpdate;
-        } else {
-          _setTodos(tabId, todoUpdate);
-        }
-      }
+      // raw 命中 Task* 后**不 continue**,继续进 passthrough — 消音逻辑下沉到
+      // message_card_list 渲染层(避免同条 message 含 text+Task* 时 text 丢失)。
+      _detectAndApplyTaskOps(tabId, raw);
 
       // 第二轮 review 🟡-2：tool_result 已被折叠块 finalResult 吸收时跳过主流，
       // 避免"主流 ToolResultCard + 折叠块内 _buildFinalResult"双重渲染。
@@ -692,10 +718,8 @@ class ChatRepository {
       }
     }
 
-    // 第二轮 review 🟡-2:历史回放路径在循环末尾统一 emit 最后一次 todos
-    if (batchedTodos != null) {
-      _setTodos(tabId, batchedTodos);
-    }
+    // 一次 batch 处理结束统一通知底部 SubAgentRunnerBar 刷新
+    _notifySubAgents(tabId);
 
     return (passthroughRaws: passthrough, newPlaceholders: newPlaceholders);
   }
@@ -767,37 +791,162 @@ class ChatRepository {
       s.length <= max ? s : '${s.substring(0, max)}…';
 
   /// 解析一条非 sidechain JSONL record，查 message.content 中是否含 Task
-  /// tool_use 或 tool_result，提取信息。返回 null 表示与 Task 无关。
-  /// R-T1-001 ~ R-T1-011：识别 TodoWrite tool_use 的 input.todos 数组。
-  /// 命中返回解析后的 todos 列表（caller 用 _setTodos 覆盖当前 Tab 的 panel 状态）；
-  /// 未命中返回 null。
+  /// R-T1-001 ~ R-T1-011：识别 Claude Code 2.0+ 任务工具三件套
+  /// (TaskCreate / TaskUpdate / TaskList) 的 tool_use,**增量**更新 panel。
   ///
-  /// 第一轮 review 🟡-1：input.todos 字段缺失 / 非 List 时返回 null（**不**更新 panel），
-  /// 否则 TodoItem.parseList 会返回 [] 把已有的 panel 清空，与 §6 safe degradation 不符。
-  /// 仅当 todos 字段存在且能成功解析出 ≥0 条有效项才更新 panel。
-  List<TodoItem>? _detectTodoWrite(Map<String, dynamic> raw) {
+  /// Bug 修复(2026-05-19): 原实现盯 TodoWrite,但 Claude Code 2.0.77 实际用
+  /// TaskCreate(subject) + TaskUpdate(taskId, status) 增量操作。
+  ///
+  /// 已识别为 Warmup 预热块的 agentId 集合,用于丢弃整个 subagent 的后续 sidechain raw
+  final Set<String> _warmupAgentIds = {};
+
+  /// Claude Code 预热 subagent 探测:首条 user message content 是 "Warmup"。
+  /// 这些预热块没有真实任务关联,不应进手机端 ChatRepository 主流/折叠块。
+  bool _isWarmupSidechain(Map<String, dynamic> raw) {
     try {
-      final inner = raw['message'];
-      if (inner is! Map) return null;
-      final content = inner['content'];
-      if (content is! List) return null;
-      for (final item in content) {
-        if (item is! Map) continue;
-        if (item['type'] != 'tool_use' || item['name'] != 'TodoWrite') continue;
-        final input = item['input'];
-        if (input is! Map) continue;
-        final todosField = input['todos'];
-        if (todosField is! List) return null;  // 字段缺失/非 List → safe degradation
-        return TodoItem.parseList(todosField);
+      final agentId = raw['agentId'] as String?;
+      if (agentId == null) return false;
+      // 后续 sidechain raw:按 agentId 集合判定
+      if (_warmupAgentIds.contains(agentId)) return true;
+      // 首条 user message(parentUuid == null + content == "Warmup")
+      if (raw['parentUuid'] != null) return false;
+      final msg = raw['message'];
+      if (msg is! Map) return false;
+      final content = msg['content'];
+      if (content is String && content == 'Warmup') {
+        _warmupAgentIds.add(agentId);
+        return true;
       }
-    } catch (_) {/* 解析失败静默忽略 */}
-    return null;
+      return false;
+    } catch (_) {
+      return false;
+    }
   }
 
-  /// R-T1-005：同一 Tab 内连续多次 TodoWrite 仅保留最新状态（覆盖式更新）。
-  void _setTodos(String tabId, List<TodoItem> todos) {
+  /// 返回 true = 命中任意 Task* tool_use(主 panel 状态已更新)；
+  /// false = 与本机制无关,raw 走原 Task subagent 折叠块 / passthrough 路径。
+  bool _detectAndApplyTaskOps(String tabId, Map<String, dynamic> raw) {
+    try {
+      final inner = raw['message'];
+      if (inner is! Map) return false;
+      final content = inner['content'];
+      if (content is! List) return false;
+      var hit = false;
+      for (final item in content) {
+        if (item is! Map) continue;
+        if (item['type'] != 'tool_use') continue;
+        final name = item['name'];
+        final input = item['input'];
+        _log.debug('TaskPanel', 'tool_use seen name=$name');
+        if (input is! Map) continue;
+        if (name == 'TaskCreate') {
+          // 暂存 (tool_use_id → subject/activeForm),等对应 tool_result 拿 #N
+          final tuId = item['id'] as String?;
+          final subject = input['subject'] as String?;
+          if (tuId != null && subject != null && subject.isNotEmpty) {
+            final activeForm = input['activeForm'] as String?;
+            _pendingTaskCreates.putIfAbsent(tabId, () => {})[tuId] =
+                _PendingTaskCreate(subject: subject, activeForm: activeForm);
+            _log.debug('TaskPanel', 'TaskCreate pending tuId=$tuId subject=$subject');
+          }
+          hit = true;
+        } else if (name == 'TaskUpdate') {
+          final taskId = input['taskId']?.toString();
+          final status = TodoStatus.tryParse(input['status'] as String?);
+          if (taskId == null || status == null) continue;
+          _applyTaskUpdate(tabId, taskId, status);
+          _log.debug('TaskPanel', 'TaskUpdate taskId=$taskId status=$status');
+          hit = true;
+        } else if (name == 'TaskList') {
+          hit = true;
+        }
+      }
+      // 处理 tool_result(配对 TaskCreate)
+      for (final item in content) {
+        if (item is! Map) continue;
+        if (item['type'] != 'tool_result') continue;
+        final refId = item['tool_use_id'] as String?;
+        if (refId == null) continue;
+        final pending = _pendingTaskCreates[tabId]?.remove(refId);
+        if (pending == null) continue;
+        final resultText = _stringifyToolResult(item['content']);
+        final taskId = _extractTaskId(resultText);
+        _log.debug('TaskPanel',
+            'tool_result match refId=$refId resultLen=${resultText.length} taskId=$taskId');
+        if (taskId == null) continue;
+        _applyTaskCreate(tabId, taskId, pending);
+        final cur = _state[tabId];
+        _log.info('TaskPanel',
+            'task panel updated tab=$tabId tasksCount=${cur?.tasks.length ?? 0}');
+        hit = true;
+      }
+      return hit;
+    } catch (e, st) {
+      _log.warn('TaskPanel', 'detect failed: $e\n$st');
+      return false;
+    }
+  }
+
+  /// 把 tool_result.content 统一成字符串(可能是 String 也可能是 List<{type:text,text:...}>).
+  String _stringifyToolResult(dynamic content) {
+    if (content is String) return content;
+    if (content is List) {
+      final buf = StringBuffer();
+      for (final c in content) {
+        if (c is Map && c['type'] == 'text') {
+          final t = c['text'];
+          if (t is String) buf.write(t);
+        }
+      }
+      return buf.toString();
+    }
+    return '';
+  }
+
+  /// 从 "Task #1 created successfully: ..." 提取数字 id。
+  static final _taskIdRegex = RegExp(r'Task #(\d+)');
+  String? _extractTaskId(String resultText) {
+    final m = _taskIdRegex.firstMatch(resultText);
+    return m?.group(1);
+  }
+
+  /// TaskCreate 命中: 把新任务加进 tasks map,默认 pending 状态。
+  void _applyTaskCreate(String tabId, String taskId, _PendingTaskCreate p) {
     final cur = _state[tabId] ?? TabChatState(tabId: tabId, messages: const []);
-    _update(tabId, cur.copyWith(todos: todos));
+    final next = Map<String, TodoItem>.from(cur.tasks);
+    next[taskId] = TodoItem(
+      taskId: taskId,
+      subject: p.subject,
+      status: TodoStatus.pending,
+      activeForm: p.activeForm,
+    );
+    _update(tabId, cur.copyWith(tasks: next));
+  }
+
+  /// TaskUpdate 命中: 改 tasks map 中指定 id 的状态;deleted 直接移除。
+  /// existing == null 时创建占位条目(场景:历史 limit 把 TaskCreate 截了,
+  /// 但留下了后续 TaskUpdate;保留 status,subject 用 "任务 #N" 占位)。
+  /// 注:mac 端 HistoryBridge 已对 Task* raw 做不受 limit 的预扫,正常情况下
+  /// existing 都应能找到;此占位仅作 defensive fallback。
+  void _applyTaskUpdate(String tabId, String taskId, TodoStatus status) {
+    final cur = _state[tabId] ?? TabChatState(tabId: tabId, messages: const []);
+    final existing = cur.tasks[taskId];
+    final next = Map<String, TodoItem>.from(cur.tasks);
+    if (status == TodoStatus.deleted) {
+      next.remove(taskId);
+    } else if (existing != null) {
+      next[taskId] = existing.copyWith(status: status);
+    } else {
+      next[taskId] = TodoItem(
+        taskId: taskId,
+        subject: '任务 #$taskId',
+        status: status,
+      );
+    }
+    _update(tabId, cur.copyWith(tasks: next));
+    final ctrlExists = _ctrls.containsKey(tabId);
+    _log.info('TaskPanel',
+        '_applyTaskUpdate done taskId=$taskId status=$status tasksCount=${next.length} ctrlExists=$ctrlExists');
   }
 
   _TaskRecordDetection? _detectTaskInRecord(Map<String, dynamic> raw) {
@@ -809,7 +958,11 @@ class ChatRepository {
       for (final item in content) {
         if (item is! Map) continue;
         final type = item['type'];
-        if (type == 'tool_use' && item['name'] == 'Task') {
+        // Claude Code 创建 sub-agent 的工具名:历史上叫 "Task",2.0+ 改为 "Agent"。
+        // 两种都识别为 sub-agent 工具,会建立 SubAgentBlock。
+        final isSubAgentTool = type == 'tool_use' &&
+            (item['name'] == 'Task' || item['name'] == 'Agent');
+        if (isSubAgentTool) {
           final id = item['id'] as String?;
           String? prompt;
           final input = item['input'];
@@ -1010,7 +1163,18 @@ class ChatRepository {
       }
       timers.clear();
     }
-    _update(tabId, cur.copyWith(messages: const [], hasMore: false, assistantTyping: false));
+    // /clear:同步清掉 TodoPanel 任务列表 + TaskCreate 待匹配 buffer + Warmup
+    // agent 集合,与 messages 一并视作"会话清空"。
+    _pendingTaskCreates[tabId]?.clear();
+    _warmupAgentIds.clear();
+    _update(tabId, cur.copyWith(
+      messages: const [],
+      hasMore: false,
+      assistantTyping: false,
+      tasks: const {},  // 清空任务面板
+    ));
+    // 通知底部 SubAgentRunnerBar 刷新(_subAgentBlocks 已 clear,会得到空列表)
+    _notifySubAgents(tabId);
   }
 
   void _replaceByUuid(String tabId, String uuid, Message replacement) {
@@ -1025,7 +1189,17 @@ class ChatRepository {
 
   void _update(String tabId, TabChatState next) {
     _state[tabId] = next;
-    _ctrls[tabId]?.add(next);
+    final ctrl = _ctrls[tabId];
+    final tasksDump = next.tasks.entries
+        .map((e) => '#${e.key}=${e.value.status.name}')
+        .join(',');
+    if (ctrl == null) {
+      _log.warn('TaskPanel', '_update no ctrl tab=$tabId tasks=[$tasksDump]');
+    } else {
+      _log.debug('TaskPanel',
+          '_update emit tab=$tabId tasks=[$tasksDump] hasListener=${ctrl.hasListener}');
+    }
+    ctrl?.add(next);
   }
 
   Future<void> dispose() async {

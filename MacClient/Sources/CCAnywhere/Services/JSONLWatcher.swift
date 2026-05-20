@@ -778,10 +778,18 @@ final class WatchStream {
         if let message = obj["message"] as? [String: Any],
            let content = message["content"] as? [[String: Any]] {
             for item in content {
-                if (item["type"] as? String) == "tool_use",
-                   let id = item["id"] as? String {
-                    ids.append(id)
+                guard (item["type"] as? String) == "tool_use",
+                      let id = item["id"] as? String else { continue }
+                // Task* 三件套（TaskCreate/TaskUpdate/TaskList/TaskGet）完全 bypass
+                // Pre/PostToolUse hook (Claude Code issue #20243)，但 PostToolUse
+                // matcher=`.*` 仍可能把这些 tool_use_id 加进 hookPushedToolUseIds
+                // 导致 JSONL 通道误 dedup —— 手机端就拿不到真实 Task tool_use raw。
+                // 这里显式排除 Task* 工具，让它们的 JSONL row 始终走透传路径。
+                let name = item["name"] as? String ?? ""
+                if name == "TaskCreate" || name == "TaskUpdate" || name == "TaskList" || name == "TaskGet" {
+                    continue
                 }
+                ids.append(id)
             }
         }
         return ids
